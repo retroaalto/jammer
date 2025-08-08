@@ -230,6 +230,36 @@ On **Windows**, you need to add the libraries to the executable folder.
 dotnet run --project Jammer.CLI -- [args]
 ```
 
+### Testing
+
+Run the test suite to verify functionality:
+
+```bash
+dotnet test
+```
+
+Run tests with detailed output:
+
+```bash
+dotnet test --verbosity normal
+```
+
+Run specific test categories:
+
+```bash
+# Run only unit tests
+dotnet test --filter Category=Unit
+
+# Run only integration tests  
+dotnet test --filter Category=Integration
+```
+
+The test suite includes:
+- **Unit Tests**: Core functionality and service layer testing
+- **Integration Tests**: Component interaction testing
+- **Mock Infrastructure**: BASS audio library and download service simulation
+- **Architectural Testing**: Validation of design patterns and testability
+
 ### Build
 
 #### Windows

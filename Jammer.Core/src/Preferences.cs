@@ -230,9 +230,16 @@ namespace Jammer
             string JammerPath = Path.Combine(Utils.JammerPath, "settings.json");
             if (File.Exists(JammerPath))
             {
-                string jsonString = File.ReadAllText(JammerPath);
-                Settings? settings = JsonSerializer.Deserialize<Settings>(jsonString);
-                return settings?.isVisualizer ?? true;
+                try
+                {
+                    string jsonString = File.ReadAllText(JammerPath);
+                    Settings? settings = JsonSerializer.Deserialize<Settings>(jsonString);
+                    return settings?.isVisualizer ?? true;
+                }
+                catch (Exception)
+                {
+                    return true;
+                }
             }
             else
             {
@@ -245,9 +252,16 @@ namespace Jammer
             string JammerPath = Path.Combine(Utils.JammerPath, "settings.json");
             if (File.Exists(JammerPath))
             {
-                string jsonString = File.ReadAllText(JammerPath);
-                Settings? settings = JsonSerializer.Deserialize<Settings>(jsonString);
-                return settings?.Volume ?? 0.5f;
+                try
+                {
+                    string jsonString = File.ReadAllText(JammerPath);
+                    Settings? settings = JsonSerializer.Deserialize<Settings>(jsonString);
+                    return settings?.Volume ?? 0.5f;
+                }
+                catch (Exception)
+                {
+                    return 0.5f;
+                }
             }
             else
             {

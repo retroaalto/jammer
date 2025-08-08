@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1701</WarningsNotAsErrors>
+  </PropertyGroup>
+
+  <!-- Core test packages -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
+    <PackageReference Include="xunit" Version="2.5.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+    <PackageReference Include="Moq" Version="4.20.70" />
+    <PackageReference Include="coverlet.collector" Version="6.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!-- CLI / console specific helpers -->
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console.Testing" Version="0.50.0" />
+    <PackageReference Include="RichardSzalay.MockHttp" Version="6.0.0" />
+    <PackageReference Include="System.IO.Abstractions" Version="21.0.29" />
+    <PackageReference Include="System.IO.Abstractions.TestingHelpers" Version="21.0.29" />
+  </ItemGroup>
+
+  <!-- Project references so tests see prod code -->
+  <ItemGroup>
+    <ProjectReference Include="..\Jammer.Core\Jammer.Core.csproj" />
+    <ProjectReference Include="..\Jammer.CLI\Jammer.CLI.csproj" />
+  </ItemGroup>
+
+  <!-- Copy BASS libraries to output directory for tests -->
+  <ItemGroup>
+    <Content Include="..\libs\linux\x86_64\libbass.so" Condition="'$(OS)' == 'Unix'">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <TargetPath>runtimes/linux-x64/native/libbass.so</TargetPath>
+    </Content>
+    <Content Include="..\libs\linux\x86_64\libbass.so" Condition="'$(OS)' == 'Unix'">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <TargetPath>libbass.so</TargetPath>
+    </Content>
+    <Content Include="..\libs\win\x64\bass.dll" Condition="'$(OS)' == 'Windows_NT'">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <TargetPath>runtimes/win-x64/native/bass.dll</TargetPath>
+    </Content>
+    <Content Include="..\libs\win\x64\bass.dll" Condition="'$(OS)' == 'Windows_NT'">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <TargetPath>bass.dll</TargetPath>
+    </Content>
+  </ItemGroup>
+
+</Project>

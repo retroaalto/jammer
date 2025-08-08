@@ -105,25 +105,21 @@ namespace Jammer
 
         public static string CheckValue(string value, string defaultValue)
         {
-
             string finalValue = IniFileHandling.ReadIni_KeyData("Keybinds", value);
-            if (Preferences.isModifierKeyHelper)
-            {
-                if (finalValue == null || finalValue.Equals(""))
-                {
-                    return defaultValue;
-                }
-                else
-                {
-                    return finalValue;
-                }
-            }
-
+            
+            // If we can't find the value in the keybinds file, use the defaultValue
             if (string.IsNullOrEmpty(finalValue))
             {
-                return defaultValue;
+                finalValue = defaultValue;
+            }
+            
+            // Skip normalization if modifier key helper is enabled
+            if (Preferences.isModifierKeyHelper)
+            {
+                return finalValue;
             }
 
+            // Normalize the input by processing modifier keys
             var parts = finalValue.Split('+')
                 .Select(p => p.Trim())
                 .Where(p => !string.IsNullOrWhiteSpace(p))
@@ -143,6 +139,12 @@ namespace Jammer
                         parts = parts.Where(p => p != "Shift").ToList();
                     }
                 }
+            }
+
+            // If after processing we only have one part (single letter), return it directly
+            if (parts.Count == 1)
+            {
+                return parts[0];
             }
 
             return string.Join(" + ", parts);

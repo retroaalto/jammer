@@ -14,7 +14,17 @@ namespace Jammer
         {
             if (Console.KeyAvailable || Action != "")
             {
-                ConsoleKeyInfo key = Console.ReadKey(true);
+                ConsoleKeyInfo key;
+                if (Console.KeyAvailable)
+                {
+                    key = Console.ReadKey(true);
+                }
+                else
+                {
+                    // In test environments, Action might be set but no key is available
+                    // Use a default key to prevent hanging
+                    key = new ConsoleKeyInfo(' ', ConsoleKey.Spacebar, false, false, false);
+                }
                 bool isAlt = IfHoldingDownALT(key);
                 bool isCtrl = IfHoldingDownCTRL(key);
                 bool isShift = IfHoldingDownSHIFT(key);

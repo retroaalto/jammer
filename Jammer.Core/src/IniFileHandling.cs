@@ -194,8 +194,20 @@ RenameSong = F2
         }
         public static string ReadIni_KeyData(string section, string key)
         {
-            string key_value = KeyData[section][key];
-            return key_value;
+            if (KeyData == null)
+            {
+                return "";
+            }
+            
+            try
+            {
+                string key_value = KeyData[section][key];
+                return key_value ?? "";
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         public static void Create_KeyDataIni(int hardReset)
