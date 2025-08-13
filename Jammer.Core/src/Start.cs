@@ -305,7 +305,7 @@ namespace Jammer
 
                 if (playerView == "default" || playerView == "all" || playerView == "rss")
                 {
-                    Thread.Sleep(1);
+                    Thread.Sleep(16);
                 }
                 else
                     Thread.Sleep(5);
