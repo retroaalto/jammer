@@ -2,7 +2,10 @@ namespace Jammer
 {
     public static class Log
     {
-        public static string[] log = Array.Empty<string>();
+        private static readonly List<string> log = new List<string>();
+        private static readonly int maxLogEntries = 1000; // Prevent unbounded growth
+        private static readonly object logLock = new object(); // Thread safety
+        
         private static void New(string txt, bool isErr = false)
         {
             var time = DateTime.Now.ToString("HH:mm:ss"); // case sensitive
@@ -13,12 +16,26 @@ namespace Jammer
                 curPlaylist = "No playlist";
             }
 
+            string logEntry;
             if (isErr)
             {
-                log = log.Append("[red]" + time + "[/]" + ";ERROR;[cyan]" + Start.Sanitize(curPlaylist) + "[/]: " + Start.Sanitize(txt)).ToArray();
-                return;
+                logEntry = "[red]" + time + "[/]" + ";ERROR;[cyan]" + Start.Sanitize(curPlaylist) + "[/]: " + Start.Sanitize(txt);
             }
-            log = log.Append("[green3_1]" + time + "[/]" + ";INFO;[cyan]" + Start.Sanitize(curPlaylist) + "[/]: " + Start.Sanitize(txt)).ToArray();
+            else
+            {
+                logEntry = "[green3_1]" + time + "[/]" + ";INFO;[cyan]" + Start.Sanitize(curPlaylist) + "[/]: " + Start.Sanitize(txt);
+            }
+            
+            lock (logLock)
+            {
+                log.Add(logEntry);
+                
+                // Implement log rotation: remove oldest entries when exceeding limit
+                if (log.Count > maxLogEntries)
+                {
+                    log.RemoveAt(0); // Remove oldest entry
+                }
+            }
         }
 
         public static void Info(string txt)
@@ -33,7 +50,10 @@ namespace Jammer
 
         public static string GetLog()
         {
-            return string.Join("\n", log);
+            lock (logLock)
+            {
+                return string.Join("\n", log);
+            }
         }
     }
 }
