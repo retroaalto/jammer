@@ -166,15 +166,18 @@ namespace Jammer
                     }
                 }
                 
-                // Write directly to file for continuous monitoring
-                try
+                // Write directly to file for continuous monitoring only in debug mode
+                if (Utils.IsDebug)
                 {
-                    var logPath = Path.Combine(Directory.GetCurrentDirectory(), "jammer_performance.log");
-                    File.AppendAllText(logPath, perfEntry + "\n");
-                }
-                catch
-                {
-                    // Ignore file write errors to prevent disrupting the main application
+                    try
+                    {
+                        var logPath = Path.Combine(Directory.GetCurrentDirectory(), "jammer_performance.log");
+                        File.AppendAllText(logPath, perfEntry + "\n");
+                    }
+                    catch
+                    {
+                        // Ignore file write errors to prevent disrupting the main application
+                    }
                 }
                 
                 lastLogTime = now;
@@ -196,6 +199,12 @@ namespace Jammer
         
         public static void WritePerformanceLogToFile()
         {
+            if (!Utils.IsDebug)
+            {
+                Log.Info("Performance logging is only available in debug mode. Use the -D flag to enable debug mode.");
+                return;
+            }
+            
             try
             {
                 var logPath = Path.Combine(Directory.GetCurrentDirectory(), "jammer_performance.log");
