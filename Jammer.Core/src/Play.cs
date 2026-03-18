@@ -236,12 +236,14 @@ namespace Jammer
 
                 try
                 {
-                    tagFile = TagLib.File.Create(fullPathToFile);
-                    title = tagFile.Tag.Title;
-                    author = tagFile.Tag.FirstPerformer;
-                    album = tagFile.Tag.Album;
-                    year = tagFile.Tag.Year.ToString();
-                    genre = tagFile.Tag.FirstGenre;
+                    using (tagFile = TagLib.File.Create(fullPathToFile))
+                    {
+                        title = tagFile.Tag.Title;
+                        author = tagFile.Tag.FirstPerformer;
+                        album = tagFile.Tag.Album;
+                        year = tagFile.Tag.Year.ToString();
+                        genre = tagFile.Tag.FirstGenre;
+                    }
                 }
                 catch (Exception)
                 {
@@ -253,17 +255,17 @@ namespace Jammer
             // Message.Data(SongExtensions.ToSongString(song), "22");
 
             // append title to song
-            if (song.Title == null || song.Title == "")
+            if ((song.Title == null || song.Title == "") && !string.IsNullOrEmpty(title))
             {
                 // Log.Info("______trying to get it from the path");
                 // Message.Data(SongExtensions.ToSongString(song), "55" + title);
                 song.Title = title;
             }
-            if (song.Author == null || song.Author == "")
+            if ((song.Author == null || song.Author == "") && !string.IsNullOrEmpty(author))
             {
                 song.Author = author;
             }
-            if (song.Album == null || song.Album == "")
+            if ((song.Album == null || song.Album == "") && !string.IsNullOrEmpty(album))
             {
                 song.Album = album;
             }
@@ -275,7 +277,7 @@ namespace Jammer
                 }
                 song.Year = year;
             }
-            if (song.Genre == null || song.Genre == "")
+            if ((song.Genre == null || song.Genre == "") && !string.IsNullOrEmpty(genre))
             {
                 song.Genre = genre;
             }
