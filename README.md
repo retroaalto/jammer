@@ -317,6 +317,10 @@ Jammer uses git submodules. To get the submodules, run this command in the root 
 git submodule update --init --recursive
 ```
 
+## Scripts
+
+See `scripts/README.md` for helper script documentation, including how to use `scripts/dotnet-install.sh` on Linux distros that do not provide a usable `dotnet` package.
+
 ### Run
 
 ```bash

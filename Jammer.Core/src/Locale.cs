@@ -160,6 +160,7 @@ namespace Jammer
             public static string ShowPlaylistCommands = CheckValueLocale("CliHelp", "ShowPlaylistCommands", "Show playlist commands");
             public static string OpenJammerFolder = CheckValueLocale("CliHelp", "OpenJammerFolder", "Open Jammer folder");
             public static string AutoUpdateJammer = CheckValueLocale("CliHelp", "AutoUpdateJammer", "Auto Update Jammer");
+            public static string TestPuppeteer = CheckValueLocale("CliHelp", "TestPuppeteer", "Run Puppeteer self-test");
             public static string ShowJammerVersion = CheckValueLocale("CliHelp", "ShowJammerVersion", "Show Jammer version");
             public static string Url = CheckValueLocale("CliHelp", "Url", "url");
             public static string File = CheckValueLocale("CliHelp", "File", "file");
