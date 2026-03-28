@@ -409,6 +409,7 @@ namespace Jammer
             /* table.AddRow("[grey]jammer[/] [green]playlist[/]", Locale.CliHelp.ShowPlaylistCommands); */
             table.AddRow($"[grey]jammer[/] [green]--start[/]", Locale.CliHelp.OpenJammerFolder);
             table.AddRow($"[grey]jammer[/] [green]--update[/]", Locale.CliHelp.AutoUpdateJammer);
+            table.AddRow($"[grey]jammer[/] [green]--test-puppeteer[/]", Locale.CliHelp.TestPuppeteer);
             table.AddRow($"[grey]jammer[/] [green]-v[/][grey],[/][green] --version[/]", $"{Locale.CliHelp.ShowJammerVersion} [grey]" + Utils.Version + "[/]");
             AnsiConsole.Write(table);
 
