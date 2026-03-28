@@ -690,16 +690,25 @@ namespace Jammer
 
                         try
                         {
-                            var file = TagLib.File.Create(songPath);
-                            file.Tag.Title = Start.Sanitize(track.Title);
-                            file.Tag.Description = track.Description;
-                            if (track.User != null && track.User.Username != null)
+                            using (var file = TagLib.File.Create(songPath))
                             {
-                                file.Tag.Performers = new string[] { track.User.Username };
+                                file.Tag.Title = Start.Sanitize(track.Title);
+                                file.Tag.Description = track.Description;
+                                if (track.User != null && track.User.Username != null)
+                                {
+                                    file.Tag.Performers = new string[] { track.User.Username };
+                                }
+                                file.Save();
                             }
-                            file.Save();
                             if (track.ArtworkUrl != null)
                                 await DownloadThumbnailAsync(track.ArtworkUrl, songPath);
+
+                            constructedSong = new Song
+                            {
+                                URI = url,
+                                Title = track.Title,
+                                Author = track.User?.Username ?? null
+                            };
                         }
                         catch (Exception ex)
                         {
@@ -754,7 +763,7 @@ namespace Jammer
 
         static async Task DownloadThumbnailAsync(Uri imageUrl, string songPath)
         {
-            var file = TagLib.File.Create(songPath);
+            using var file = TagLib.File.Create(songPath);
             using WebClient webClient = new();
             byte[] imageBytes = webClient.DownloadData(imageUrl);
             Picture picture = new(imageBytes);
