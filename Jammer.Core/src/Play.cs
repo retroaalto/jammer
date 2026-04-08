@@ -516,9 +516,12 @@ namespace Jammer
             Random rnd = new Random();
             Utils.CurrentSongIndex = rnd.Next(0, Utils.Songs.Length);
             // make sure we dont play the same song twice in a row
-            while (Utils.CurrentSongIndex == lastSongIndex)
+            // (only possible when there are at least 2 songs)
+            int attempts = 0;
+            while (Utils.CurrentSongIndex == lastSongIndex && Utils.Songs.Length > 1 && attempts < 20)
             {
                 Utils.CurrentSongIndex = rnd.Next(0, Utils.Songs.Length);
+                attempts++;
             }
             PlayDrawReset();
             PlaySong(Utils.Songs, Utils.CurrentSongIndex);

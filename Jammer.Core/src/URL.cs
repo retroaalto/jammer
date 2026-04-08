@@ -4,27 +4,31 @@ namespace Jammer
 {
     public class URL
     {
+        // Pre-compiled static regexes — avoids recompiling on every call.
+        private static readonly Regex _scSongRegex      = new Regex(Utils.SCSongPattern,      RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex _scPlaylistRegex  = new Regex(Utils.SCPlaylistPattern,  RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex _ytPlaylistRegex  = new Regex(Utils.YTPlaylistPattern,  RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex _ytSongRegex      = new Regex(Utils.YTSongPattern,      RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex _urlHttpsRegex    = new Regex(Utils.UrlPatternHTTPS,    RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex _urlHttpRegex     = new Regex(Utils.UrlPatternHTTP,     RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         public static bool IsValidSoundcloudSong(string uri)
         {
-            Regex regex = new Regex(Utils.SCSongPattern, RegexOptions.IgnoreCase);
-            return regex.IsMatch(uri);
+            return _scSongRegex.IsMatch(uri);
         }
 
         public static bool isValidSoundCloudPlaylist(string uri)
         {
-            Regex regex = new Regex(Utils.SCPlaylistPattern, RegexOptions.IgnoreCase);
-            return regex.IsMatch(uri);
+            return _scPlaylistRegex.IsMatch(uri);
         }
 
         public static bool IsValidYoutubePlaylist(string uri)
         {
-            Regex regex = new Regex(Utils.YTPlaylistPattern, RegexOptions.IgnoreCase);
-            return regex.IsMatch(uri);
+            return _ytPlaylistRegex.IsMatch(uri);
         }
         public static bool IsValidYoutubeSong(string uri)
         {
-            Regex regex = new Regex(Utils.YTSongPattern, RegexOptions.IgnoreCase);
-            return regex.IsMatch(uri);
+            return _ytSongRegex.IsMatch(uri);
         }
 
         public static bool IsUrl(string uri)
@@ -35,14 +39,12 @@ namespace Jammer
 
         public static bool IsUrlHTTPS(string uri)
         {
-            Regex regex = new Regex(Utils.UrlPatternHTTPS, RegexOptions.IgnoreCase);
-            return regex.IsMatch(uri);
+            return _urlHttpsRegex.IsMatch(uri);
         }
 
         public static bool IsUrlHTTP(string uri)
         {
-            Regex regex = new Regex(Utils.UrlPatternHTTP, RegexOptions.IgnoreCase);
-            return regex.IsMatch(uri);
+            return _urlHttpRegex.IsMatch(uri);
         }
 
         /// <summary>

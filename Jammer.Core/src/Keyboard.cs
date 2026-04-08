@@ -16,7 +16,10 @@ namespace Jammer
         {
             if (Console.KeyAvailable || Action != "")
             {
-                ConsoleKeyInfo key = Console.ReadKey(true);
+                // Only read from the console buffer when a key is actually available.
+                // When Action was set by a media-key hook there may be no key in the
+                // buffer, and Console.ReadKey(true) would block indefinitely.
+                ConsoleKeyInfo key = Console.KeyAvailable ? Console.ReadKey(true) : default;
                 bool isAlt = IfHoldingDownALT(key);
                 bool isCtrl = IfHoldingDownCTRL(key);
                 bool isShift = IfHoldingDownSHIFT(key);
@@ -27,16 +30,20 @@ namespace Jammer
 
                 var pressed_key = key.Key;
 
-                Action = IniFileHandling.FindMatch_KeyData(
-                    pressed_key,
-                    isAlt,
-                    isCtrl,
-                    isShift,
-                    isShiftAlt,
-                    isShiftCtrl,
-                    isCtrlAlt,
-                    isShiftCtrlAlt
-                    );
+                // Only overwrite Action from a physical key press; preserve a hook-set Action
+                if (Console.KeyAvailable || key.Key != default(ConsoleKey))
+                {
+                    Action = IniFileHandling.FindMatch_KeyData(
+                        pressed_key,
+                        isAlt,
+                        isCtrl,
+                        isShift,
+                        isShiftAlt,
+                        isShiftCtrl,
+                        isCtrlAlt,
+                        isShiftCtrlAlt
+                        );
+                }
 
                 if (playerView.Equals("editkeybindings") || IniFileHandling.EditingKeybind)
                 {

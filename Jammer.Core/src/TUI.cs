@@ -283,18 +283,19 @@ namespace Jammer
 
             int progress = (int)(value / max * length);
             // length is modified also by the volume string
+            var progressBarBuilder = new System.Text.StringBuilder(length);
             for (int i = 0; i < length; i++)
             {
                 if (i < progress)
                 {
-                    progressBar += Themes.CurrentTheme.Time.TimebarLetter;
+                    progressBarBuilder.Append(Themes.CurrentTheme.Time.TimebarLetter);
                 }
                 else
                 {
-                    progressBar += " ";
+                    progressBarBuilder.Append(' ');
                 }
-
             }
+            progressBar += progressBarBuilder.ToString();
 
             progressBar = Themes.sColor(progressBar, Themes.CurrentTheme.Time.TimebarColor);
             progressBar += Themes.sColor("| ", Themes.CurrentTheme.Time.TimebarColor) + Funcs.CalculateTime(max, true) + extraVolume;
@@ -307,9 +308,9 @@ namespace Jammer
             var layout = new LayoutConfig(Start.consoleWidth, Start.consoleHeight);
             var tmpstr = theText;
             var spaces = layout.CalculateTopMessageWidth(theText.Length);
-            for (int i = 0; i < spaces; i++)
+            if (spaces > 0)
             {
-                tmpstr += " ";
+                tmpstr += new string(' ', spaces);
             }
 
             // AnsiConsole.Cursor.SetPosition(2, 2);

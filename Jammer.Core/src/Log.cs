@@ -2,7 +2,12 @@ namespace Jammer
 {
     public static class Log
     {
-        public static string[] log = Array.Empty<string>();
+        private const int MaxEntries = 500;
+        private static readonly Queue<string> _log = new Queue<string>(MaxEntries + 1);
+
+        // Read-only view for external consumers that previously accessed log[]
+        public static string[] log => _log.ToArray();
+
         private static void New(string txt, bool isErr = false)
         {
             var time = DateTime.Now.ToString("HH:mm:ss"); // case sensitive
@@ -13,12 +18,15 @@ namespace Jammer
                 curPlaylist = "No playlist";
             }
 
-            if (isErr)
+            string entry = isErr
+                ? "[red]" + time + "[/]" + ";ERROR;[cyan]" + Start.Sanitize(curPlaylist) + "[/]: " + Start.Sanitize(txt)
+                : "[green3_1]" + time + "[/]" + ";INFO;[cyan]" + Start.Sanitize(curPlaylist) + "[/]: " + Start.Sanitize(txt);
+
+            _log.Enqueue(entry);
+            if (_log.Count > MaxEntries)
             {
-                log = log.Append("[red]" + time + "[/]" + ";ERROR;[cyan]" + Start.Sanitize(curPlaylist) + "[/]: " + Start.Sanitize(txt)).ToArray();
-                return;
+                _log.Dequeue(); // drop the oldest entry to keep memory bounded
             }
-            log = log.Append("[green3_1]" + time + "[/]" + ";INFO;[cyan]" + Start.Sanitize(curPlaylist) + "[/]: " + Start.Sanitize(txt)).ToArray();
         }
 
         public static void Info(string txt)
@@ -33,7 +41,7 @@ namespace Jammer
 
         public static string GetLog()
         {
-            return string.Join("\n", log);
+            return string.Join("\n", _log);
         }
     }
 }

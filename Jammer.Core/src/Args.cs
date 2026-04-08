@@ -236,6 +236,7 @@ namespace Jammer
                             while (!File.Exists(downloadPath))
                             {
                                 // Wait for the file to be downloaded
+                                Thread.Sleep(100);
                             }
                             Process.Start(batchFile, arguments);
                         }

@@ -255,9 +255,9 @@ namespace Jammer
                     // print the call stack
                     Message.Data(Environment.StackTrace, "Call Stack", true);
 
+                // Get current playback position once and share the result between both fields.
                 Utils.PreciseTime = Bass.ChannelBytes2Seconds(Utils.CurrentMusic, Bass.ChannelGetPosition(Utils.CurrentMusic));
-                // get current time in seconds
-                Utils.TotalMusicDurationInSec = Bass.ChannelBytes2Seconds(Utils.CurrentMusic, Bass.ChannelGetPosition(Utils.CurrentMusic));
+                Utils.TotalMusicDurationInSec = Utils.PreciseTime;
                 // get whole song length in seconds
                 //Utils.currentMusicLength = Utils.audioStream.Length / Utils.audioStream.WaveFormat.AverageBytesPerSecond;
                 Utils.SongDurationInSec = Bass.ChannelBytes2Seconds(Utils.CurrentMusic, Bass.ChannelGetLength(Utils.CurrentMusic));
@@ -312,10 +312,10 @@ namespace Jammer
 
                 if (playerView == "default" || playerView == "all" || playerView == "rss")
                 {
-                    Thread.Sleep(1);
+                    Thread.Sleep(16); // ~60 fps ceiling for the main render loop
                 }
                 else
-                    Thread.Sleep(5);
+                    Thread.Sleep(16);
             }
         }
 

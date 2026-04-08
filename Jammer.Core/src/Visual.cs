@@ -11,7 +11,7 @@ namespace Jammer
     {
         public static string FileContent = @"[Audio Visualizer]
 ; Refresh time in milliseconds
-RefreshTime = 35
+RefreshTime = 33
 ; Buffer size for FFT data
 ; meaning higher values will detect more frequencies,
 BufferSize = 41000
@@ -36,7 +36,7 @@ PausingEffect = true
 ";
 
 
-        public static int refreshTime = 10; // Visualizer enabled flag
+        public static int refreshTime = 33; // Default visualizer refresh interval in ms (~30 fps)
         public static int bufferSize = 41000; // FFT data buffer size
         public static string dataFlags = "FFT4098"; // FFT data flags
         public static int minFrequency = 50; // Minimum frequency
@@ -46,6 +46,7 @@ PausingEffect = true
         public static bool pausingEffect = true; // Pausing effect flag
 
         private static float scaleFactor = 1.0f;
+        private static float[]? _fftBuffer = null; // reused across frames to avoid per-frame heap allocation
         public static string GetSongVisual(int length, bool isPlaying)
         {
             // If the song is not playing, gradually decrease the scale factor
@@ -59,7 +60,12 @@ PausingEffect = true
             }
 
             int _bufferSize = bufferSize; // FFT data buffer size
-            var fftData = new float[_bufferSize]; // FFT data buffer
+            // Reuse the buffer if it is the right size; only allocate when the configured size changes
+            if (_fftBuffer == null || _fftBuffer.Length != _bufferSize)
+            {
+                _fftBuffer = new float[_bufferSize];
+            }
+            var fftData = _fftBuffer;
 
             // Retrieve FFT data from current music channel
             int bytesRead = Bass.ChannelGetData(Utils.CurrentMusic, fftData, (int)GetFFTDataFlags());
@@ -214,7 +220,7 @@ PausingEffect = true
                 // Check if the desired entries exist, and add them if they don't
                 if (!data["Audio Visualizer"].ContainsKey("RefreshTime"))
                 {
-                    data["Audio Visualizer"]["RefreshTime"] = "10";
+                    data["Audio Visualizer"]["RefreshTime"] = "33";
                     changed = true;
                 }
                 if (!data["Audio Visualizer"].ContainsKey("BufferSize"))
