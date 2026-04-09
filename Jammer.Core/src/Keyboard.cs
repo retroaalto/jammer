@@ -460,6 +460,10 @@ namespace Jammer
                     }
                 }
                 else
+                {
+                    // Log every action dispatch to debug.log so the sequence of events
+                    // leading up to a CPU spike is visible.
+                    if (Action != "") Debug.dprint($"action={Action} key={key.Key} view={playerView}");
                     switch (Action)
                     {
                         case "ToMainMenu":
@@ -827,6 +831,9 @@ namespace Jammer
                             break;
                         case "ShowLog":
                             AnsiConsole.Clear();
+                            // When running with -D, also flush everything to debug.log
+                            // so you have a persistent record of what happened.
+                            Debug.FlushAppLog();
                             Message.Data(Log.GetLog(), "Log");
                             drawWhole = true;
                             break;
@@ -1020,6 +1027,7 @@ namespace Jammer
                             drawWhole = true;
                             break;
                     }
+                } // end else switch(Action)
                 Action = "";
                 if (playerView == "all")
                 {
