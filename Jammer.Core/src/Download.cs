@@ -20,46 +20,71 @@ namespace Jammer
         static string[] playlistSongs = { "" };
         public static readonly YoutubeClient youtube = new();
 
+        // Cancels any in-flight download when a new song starts.
+        private static CancellationTokenSource _downloadCts = new();
+
         public static (string, Song?) DownloadSong(string url)
         {
+            // Cancel the previous download and issue a fresh token.
+            var oldCts = _downloadCts;
+            _downloadCts = new CancellationTokenSource();
+            var ct = _downloadCts.Token;
+            try { oldCts.Cancel(); } catch { }
+            oldCts.Dispose();
+
             songPath = "";
             constructedSong = null;
 
             Debug.dprint($"{Locale.OutsideItems.Downloading}: " + url.ToString());
-            if (URL.IsValidSoundcloudSong(url))
+            try
             {
-                DownloadSoundCloudTrackAsync(url).Wait();
-            }
-            else if (URL.IsValidYoutubeSong(url))
-            {
-                DownloadYoutubeTrackAsync(url).Wait();
-            }
-            else if (URL.IsValidRssFeed(url))
-            {
-                DownloadRssFeed(url).Wait();
-            }
-            else if (URL.IsUrl(url))
-            {
-                if (url.EndsWith(".jammer"))
+                if (URL.IsValidSoundcloudSong(url))
                 {
-                    DownloadJammerFile(url).Wait();
+                    DownloadSoundCloudTrackAsync(url, ct).Wait(ct);
+                }
+                else if (URL.IsValidYoutubeSong(url))
+                {
+                    DownloadYoutubeTrackAsync(url, ct).Wait(ct);
+                }
+                else if (URL.IsValidRssFeed(url))
+                {
+                    DownloadRssFeed(url, ct).Wait(ct);
+                }
+                else if (URL.IsUrl(url))
+                {
+                    if (url.EndsWith(".jammer"))
+                    {
+                        DownloadJammerFile(url, ct).Wait(ct);
+                    }
+                    else
+                    {
+                        GeneralDownload(url, ct).Wait(ct);
+                    }
                 }
                 else
                 {
-                    GeneralDownload(url).Wait();
+                    Console.WriteLine(Locale.OutsideItems.InvalidUrl);
+                    Debug.dprint("Invalid url");
                 }
             }
-            else
+            catch (OperationCanceledException)
             {
-                Console.WriteLine(Locale.OutsideItems.InvalidUrl);
-                Debug.dprint("Invalid url");
+                Debug.dprint("DownloadSong cancelled (superseded by newer request): " + url);
+                songPath = "";
+                constructedSong = null;
+            }
+            catch (AggregateException ae) when (ae.InnerExceptions.All(e => e is OperationCanceledException || e is TaskCanceledException))
+            {
+                Debug.dprint("DownloadSong cancelled (aggregate): " + url);
+                songPath = "";
+                constructedSong = null;
             }
 
             Start.drawWhole = true;
             return (songPath, constructedSong);
         }
 
-        private static async Task DownloadRssFeed(string url)
+        private static async Task DownloadRssFeed(string url, CancellationToken ct = default)
         {
             RootRssData rssData = await Rss.GetRssData(url);
 
@@ -76,7 +101,7 @@ namespace Jammer
             return;
         }
 
-        private static async Task GeneralDownload(string url)
+        private static async Task GeneralDownload(string url, CancellationToken ct = default)
         {
             string formattedUrl = FormatUrlForFilename(url, true);
             songPath = Path.Combine(
@@ -101,10 +126,10 @@ namespace Jammer
                     httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3");
                     httpClient.Timeout = TimeSpan.FromMinutes(10);
 
-                    var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+                    var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
                     response.EnsureSuccessStatusCode();
 
-                    using (var stream = await response.Content.ReadAsStreamAsync())
+                    using (var stream = await response.Content.ReadAsStreamAsync(ct))
                     using (var fileStream = new FileStream(songPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true))
                     {
                         var buffer = new byte[8192];
@@ -112,9 +137,9 @@ namespace Jammer
                         long totalBytesRead = 0;
                         long totalBytes = response.Content.Headers.ContentLength ?? -1;
 
-                        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, ct)) > 0)
                         {
-                            await fileStream.WriteAsync(buffer, 0, bytesRead);
+                            await fileStream.WriteAsync(buffer, 0, bytesRead, ct);
                             totalBytesRead += bytesRead;
 
                             if (totalBytes > 0)
@@ -133,6 +158,13 @@ namespace Jammer
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                // Propagate cancellation upward; partial file will be cleaned up by caller.
+                if (System.IO.File.Exists(songPath))
+                    try { System.IO.File.Delete(songPath); } catch { }
+                throw;
+            }
             catch (Exception ex)
             {
                 AnsiConsole.MarkupLine($"{Locale.OutsideItems.ErrorDownload}" + ex.Message);
@@ -145,7 +177,7 @@ namespace Jammer
             return downloadedPath.LastIndexOf("/") > 0 ? downloadedPath.Substring(downloadedPath.LastIndexOf("/") + 1) : downloadedPath;
         }
 
-        private static async Task DownloadJammerFile(string url)
+        private static async Task DownloadJammerFile(string url, CancellationToken ct = default)
         {
             string downloadedPath = Path.Combine(Utils.JammerPath, "playlists", GetDownloadedJammerFileName(url));
 
@@ -170,10 +202,10 @@ namespace Jammer
                 httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3");
                 httpClient.Timeout = TimeSpan.FromMinutes(10);
 
-                var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+                var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
                 response.EnsureSuccessStatusCode();
 
-                using (var stream = await response.Content.ReadAsStreamAsync())
+                using (var stream = await response.Content.ReadAsStreamAsync(ct))
                 using (var fileStream = new FileStream(downloadedPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true))
                 {
                     var buffer = new byte[8192];
@@ -181,9 +213,9 @@ namespace Jammer
                     long totalBytesRead = 0;
                     long totalBytes = response.Content.Headers.ContentLength ?? -1;
 
-                    while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, ct)) > 0)
                     {
-                        await fileStream.WriteAsync(buffer, 0, bytesRead);
+                        await fileStream.WriteAsync(buffer, 0, bytesRead, ct);
                         totalBytesRead += bytesRead;
 
                         if (totalBytes > 0)
@@ -194,6 +226,12 @@ namespace Jammer
                         }
                     }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                if (System.IO.File.Exists(downloadedPath))
+                    try { System.IO.File.Delete(downloadedPath); } catch { }
+                throw;
             }
             catch (Exception ex)
             {
@@ -209,20 +247,20 @@ namespace Jammer
             };
         }
 
-        private static async Task DownloadYoutubeTrackAsync(string url)
+        private static async Task DownloadYoutubeTrackAsync(string url, CancellationToken ct = default)
         {
             // Route to appropriate backend based on preference
             if (Preferences.backEndType == BackEndTypeYT.YoutubeDL)
             {
-                await DownloadYoutubeTrackWithYtDlpAsync(url);
+                await DownloadYoutubeTrackWithYtDlpAsync(url, ct);
             }
             else
             {
-                await DownloadYoutubeTrackWithYoutubeExplodeAsync(url);
+                await DownloadYoutubeTrackWithYoutubeExplodeAsync(url, ct);
             }
         }
 
-        private static async Task DownloadYoutubeTrackWithYoutubeExplodeAsync(string url)
+        private static async Task DownloadYoutubeTrackWithYoutubeExplodeAsync(string url, CancellationToken ct = default)
         {
             string formattedUrl = FormatUrlForFilename(url);
 
@@ -247,9 +285,9 @@ namespace Jammer
 
             try
             {
-                var streamManifest = await youtube.Videos.Streams.GetManifestAsync(url);
+                var streamManifest = await youtube.Videos.Streams.GetManifestAsync(url, cancellationToken: ct);
                 var streamInfo = streamManifest.GetAudioStreams().TryGetWithHighestBitrate();
-                var video = await youtube.Videos.GetAsync(url);
+                var video = await youtube.Videos.GetAsync(url, ct);
 
                 if (streamInfo != null)
                 {
@@ -272,7 +310,7 @@ namespace Jammer
                         TUI.PrintToTopOfPlayer(theText + $" {data:P}");
                     });
 
-                    await youtube.Videos.Streams.DownloadAsync(streamInfo, songPath, progress);
+                    await youtube.Videos.Streams.DownloadAsync(streamInfo, songPath, progress, cancellationToken: ct);
 
                     // if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                     // If using Linux
@@ -314,6 +352,13 @@ namespace Jammer
                     Message.Data(Locale.OutsideItems.NoAudioStream, Locale.OutsideItems.Error);
                 }
             }
+            catch (OperationCanceledException)
+            {
+                Debug.dprint("YoutubeExplode download cancelled: " + url);
+                songPath = "";
+                constructedSong = null;
+                throw;
+            }
             catch (Exception ex)
             {
                 if (Funcs.DontShowErrorWhenSongNotFound())
@@ -330,7 +375,7 @@ namespace Jammer
             }
         }
 
-        private static async Task DownloadYoutubeTrackWithYtDlpAsync(string url)
+        private static async Task DownloadYoutubeTrackWithYtDlpAsync(string url, CancellationToken ct = default)
         {
             string formattedUrl = FormatUrlForFilename(url);
 
@@ -419,7 +464,7 @@ namespace Jammer
                 TUI.PrintToTopOfPlayer("Downloading with yt-dlp...");
                 
                 // Use simple approach to download best audio
-                var result = await ytdl.RunAudioDownload(url, AudioConversionFormat.Vorbis);
+                var result = await ytdl.RunAudioDownload(url, AudioConversionFormat.Vorbis, ct);
 
                 if (result.Success && result.Data != null)
                 {
@@ -452,7 +497,7 @@ namespace Jammer
                     TUI.PrintToTopOfPlayer("Getting video info...");
                     
                     // Get video info for metadata
-                    var infoResult = await ytdl.RunVideoDataFetch(url);
+                    var infoResult = await ytdl.RunVideoDataFetch(url, ct: ct);
                     if (infoResult.Success && infoResult.Data != null)
                     {
                         var videoData = infoResult.Data;
@@ -475,6 +520,13 @@ namespace Jammer
                 {
                     throw new Exception("yt-dlp download failed: " + string.Join("; ", result.ErrorOutput ?? new string[0]) + " :: "+ytdl.YoutubeDLPath);
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                Debug.dprint("yt-dlp download cancelled: " + url);
+                songPath = "";
+                constructedSong = null;
+                throw;
             }
             catch (Exception ex)
             {
@@ -637,7 +689,7 @@ namespace Jammer
             return new SoundCloudClient(Preferences.clientID);
         }
 
-        public static async Task DownloadSoundCloudTrackAsync(string url)
+        public static async Task DownloadSoundCloudTrackAsync(string url, CancellationToken ct = default)
         {
             // if already downloaded, don't download again
             string formattedUrl = FormatUrlForFilename(url);
@@ -671,7 +723,7 @@ namespace Jammer
 
             try
             {
-                var track = await soundcloud.Tracks.GetAsync(url);
+                var track = await soundcloud.Tracks.GetAsync(url, ct);
 
                 if (track != null)
                 {
@@ -684,7 +736,7 @@ namespace Jammer
                             TUI.PrintToTopOfPlayer(theText + $" {data:P}");
                         });
 
-                        await soundcloud.DownloadAsync(track, songPath, progress);
+                        await soundcloud.DownloadAsync(track, songPath, progress, null, ct);
 
                         TUI.PrintToTopOfPlayer("Trying to Tag song");
 
@@ -734,6 +786,13 @@ namespace Jammer
                     Debug.dprint("track returns null");
                 }
 
+            }
+            catch (OperationCanceledException)
+            {
+                Debug.dprint("SoundCloud download cancelled: " + url);
+                songPath = "";
+                constructedSong = null;
+                throw;
             }
             catch (Exception ex)
             {
