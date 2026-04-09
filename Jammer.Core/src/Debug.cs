@@ -12,6 +12,67 @@ namespace Jammer
         private static TimeSpan _lastCpuTime   = TimeSpan.Zero;
         private static DateTime _lastCpuSample = DateTime.MinValue;
 
+        // State for /proc/<pid>/stat jiffies delta (mirrors what top reports).
+        private static long     _lastJiffies    = -1;
+        private static DateTime _lastJiffySample = DateTime.MinValue;
+        private static readonly long TicksPerSecond = GetTicksPerSecond();
+
+        private static long GetTicksPerSecond()
+        {
+            try
+            {
+                // sysconf(_SC_CLK_TCK) via getconf — almost always 100 on Linux.
+                var psi = new System.Diagnostics.ProcessStartInfo("getconf", "CLK_TCK")
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute        = false
+                };
+                using var p = System.Diagnostics.Process.Start(psi);
+                if (p != null)
+                {
+                    string s = p.StandardOutput.ReadToEnd().Trim();
+                    p.WaitForExit();
+                    if (long.TryParse(s, out long hz)) return hz;
+                }
+            }
+            catch { }
+            return 100; // safe fallback
+        }
+
+        /// <summary>
+        /// Reads utime+stime from /proc/self/stat and returns CPU% since last
+        /// call, matching what top displays (single-core %, not divided by ncpu).
+        /// Returns "?" on first call or on any read failure.
+        /// </summary>
+        private static string ReadProcStatCpu()
+        {
+            try
+            {
+                var now    = DateTime.UtcNow;
+                // Fields in /proc/self/stat are space-separated; field 14 = utime, 15 = stime (0-indexed).
+                var fields = File.ReadAllText("/proc/self/stat").Split(' ');
+                if (fields.Length < 15) return "?";
+                long utime   = long.Parse(fields[13]);
+                long stime   = long.Parse(fields[14]);
+                long jiffies = utime + stime;
+
+                string result = "?";
+                if (_lastJiffies >= 0)
+                {
+                    double wallSec   = (now - _lastJiffySample).TotalSeconds;
+                    if (wallSec > 0)
+                    {
+                        double cpuPercent = (jiffies - _lastJiffies) / (wallSec * TicksPerSecond) * 100.0;
+                        result = $"{cpuPercent:F1}%";
+                    }
+                }
+                _lastJiffies     = jiffies;
+                _lastJiffySample = now;
+                return result;
+            }
+            catch { return "?"; }
+        }
+
         /// <summary>
         /// Appends a line to ~/.jammer/debug.log.
         /// Format: HH:mm:ss.fff;ClassName;MethodName: message
@@ -76,11 +137,13 @@ namespace Jammer
                 _lastCpuTime   = currentCpuTime;
                 _lastCpuSample = now;
 
+                string cpuOsStr = ReadProcStatCpu();
+
                 Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
                 using var writer = new StreamWriter(LogPath, append: true);
                 writer.WriteLine(
                     $"{now:HH:mm:ss.fff};PERF;{label}: " +
-                    $"cpu={cpuStr} " +
+                    $"cpu={cpuStr} cpu_os={cpuOsStr} " +
                     $"heap={heapBytes / 1024}KB " +
                     $"gc0={gen0} gc1={gen1} gc2={gen2} " +
                     $"threads={threads}");
