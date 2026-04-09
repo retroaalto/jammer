@@ -139,6 +139,11 @@ namespace Jammer
 
         public static string previousView = "default";
         public static bool debug = false;
+
+        // Perf-snapshot counter: emit a dperf() line every ~5 s (312 * 16 ms ≈ 5 s).
+        private static int _perfTickCounter = 0;
+        private const  int PerfTickInterval = 312;
+
         public static void Loop()
         {
             lastSeconds = -1;
@@ -285,7 +290,12 @@ namespace Jammer
                     {
                         if (state == MainStates.playing || state == MainStates.pause || state == MainStates.stop || state == MainStates.idle)
                         {
-                            TUI.DrawVisualizer();
+                            // Skip the render entirely once the pausing-effect has fully decayed —
+                            // there is nothing visible to draw and it saves the AnsiConsole write.
+                            if (!Visual.IsDecayed)
+                            {
+                                TUI.DrawVisualizer();
+                            }
                         }
                     }
                     if (drawTime)
@@ -310,6 +320,17 @@ namespace Jammer
                 drawTime = false;
                 drawWhole = false;
 
+                // Periodic performance snapshot (only when -D flag is active).
+                if (Utils.IsDebug)
+                {
+                    _perfTickCounter++;
+                    if (_perfTickCounter >= PerfTickInterval)
+                    {
+                        _perfTickCounter = 0;
+                        Debug.dperf($"loop state={state} view={playerView} songs={Utils.Songs.Length}");
+                    }
+                }
+
                 if (playerView == "default" || playerView == "all" || playerView == "rss")
                 {
                     Thread.Sleep(16); // ~60 fps ceiling for the main render loop
@@ -320,10 +341,14 @@ namespace Jammer
         }
 
         static bool canVisualize = false;
+        private static int _vizPerfCounter = 0;
+        private const  int VizPerfInterval = 1000; // ~30 s at 30 ms sleep
         private static void EqualizerLoop()
         {
             while (true)
             {
+                bool isPlaying = state == MainStates.playing;
+
                 if (Preferences.isVisualizer)
                 {
                     if (playerView == "default" || playerView == "all")
@@ -340,7 +365,24 @@ namespace Jammer
                         drawVisualizer = true;
                     }
                 }
-                Thread.Sleep(Visual.refreshTime);
+
+                if (Utils.IsDebug)
+                {
+                    _vizPerfCounter++;
+                    if (_vizPerfCounter >= VizPerfInterval)
+                    {
+                        _vizPerfCounter = 0;
+                        Debug.dperf($"vizthread canVisualize={canVisualize} refreshTime={Visual.refreshTime}");
+                    }
+                }
+
+                // When not actively playing, slow the visualizer loop way down.
+                // The pausing-effect decay finishes in ~1s, after which there is nothing
+                // to draw — no point burning CPU at 28 Hz for a blank bar.
+                // 500 ms is still fast enough to snap the visualizer back the moment
+                // playback resumes.
+                int sleepMs = isPlaying ? Visual.refreshTime : 500;
+                Thread.Sleep(sleepMs);
             }
         }
 

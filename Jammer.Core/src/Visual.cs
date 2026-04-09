@@ -47,12 +47,24 @@ PausingEffect = true
 
         private static float scaleFactor = 1.0f;
         private static float[]? _fftBuffer = null; // reused across frames to avoid per-frame heap allocation
+
+        // Exposed so callers can skip rendering when the pausing-effect has fully decayed.
+        public static bool IsDecayed => !Start.state.Equals(MainStates.playing) && scaleFactor < 0.01f;
+
         public static string GetSongVisual(int length, bool isPlaying)
         {
             // If the song is not playing, gradually decrease the scale factor
             if (!isPlaying && pausingEffect)
             {
                 scaleFactor *= (float)Math.Pow(0.95, Math.Max(1, refreshTime) / 6.0f);
+
+                // Once fully decayed there is nothing meaningful to draw — return early
+                // to skip the FFT read, StringBuilder allocation, and Themes.sColor call.
+                if (scaleFactor < 0.01f)
+                {
+                    scaleFactor = 0f;
+                    return string.Empty;
+                }
             }
             else
             {
