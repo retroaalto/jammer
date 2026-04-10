@@ -144,6 +144,14 @@ namespace Jammer
         private static int _perfTickCounter = 0;
         private const  int PerfTickInterval = 312;
 
+        // Visualizer render-time tracking (debug only).
+        // _vizRenderMs: cumulative ms spent in TUI.DrawVisualizer() since last dperf().
+        // _vizRenderCount: number of actual (non-cached) renders since last dperf().
+        // _vizSkipCount: number of renders skipped due to cache hit since last dperf().
+        private static long _vizRenderMs    = 0;
+        private static int  _vizRenderCount = 0;
+        private static int  _vizSkipCount   = 0;
+
         public static void Loop()
         {
             lastSeconds = -1;
@@ -175,6 +183,9 @@ namespace Jammer
                     consoleWidth = Console.WindowWidth;
                     AnsiConsole.Clear();
                     drawWhole = true;
+                    // Invalidate the visualizer render cache so the first frame after
+                    // the resize is always written, even if FFT data is unchanged.
+                    Components.VisualizerComponent.InvalidateCache();
                 }
 
                 switch (state)
@@ -279,6 +290,8 @@ namespace Jammer
                 if (previousView != playerView)
                 {
                     drawWhole = true;
+                    // View change repaints the whole screen; the visualizer cache is stale.
+                    Components.VisualizerComponent.InvalidateCache();
                 }
 
                 if (playerView == "default" || playerView == "all" || playerView == "rss")
@@ -294,7 +307,24 @@ namespace Jammer
                             // there is nothing visible to draw and it saves the AnsiConsole write.
                             if (!Visual.IsDecayed)
                             {
-                                TUI.DrawVisualizer();
+                                if (Utils.IsDebug)
+                                {
+                                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                                    int prevSkip = Components.VisualizerComponent.SkipCount;
+                                    TUI.DrawVisualizer();
+                                    sw.Stop();
+                                    if (Components.VisualizerComponent.SkipCount > prevSkip)
+                                        _vizSkipCount++;
+                                    else
+                                    {
+                                        _vizRenderMs    += sw.ElapsedMilliseconds;
+                                        _vizRenderCount++;
+                                    }
+                                }
+                                else
+                                {
+                                    TUI.DrawVisualizer();
+                                }
                             }
                         }
                     }
@@ -327,7 +357,11 @@ namespace Jammer
                     if (_perfTickCounter >= PerfTickInterval)
                     {
                         _perfTickCounter = 0;
-                        Debug.dperf($"loop state={state} view={playerView} songs={Utils.Songs.Length}");
+                        Debug.dperf($"loop state={state} view={playerView} songs={Utils.Songs.Length}" +
+                            $" vizRenders={_vizRenderCount} vizSkips={_vizSkipCount} vizRenderMs={_vizRenderMs}");
+                        _vizRenderMs    = 0;
+                        _vizRenderCount = 0;
+                        _vizSkipCount   = 0;
                     }
                 }
 

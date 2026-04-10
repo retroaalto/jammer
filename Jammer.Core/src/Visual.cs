@@ -18,10 +18,10 @@ BufferSize = 41000
 ; Better FFT will be more accurate and smooth
 ; but can be out of sync with the audio
 ; Best:    FFT32768 FFT16384        (Recommended)
-; Fast:    FFT8192  FFT4098 FFT2048  (Recommended)
+; Fast:    FFT8192  FFT4096 FFT2048  (Recommended)
 ; Fastest: FFT1024  FFT512  FFT256  (Not Recommended)
 ; if nothing shows up, try changing the 'FrequencyMultiplier'
-DataFlags = FFT4098
+DataFlags = FFT4096
 MinFrequency = 50
 MaxFrequency = 17000
 FrequencyMultiplier = 900000000
