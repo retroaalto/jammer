@@ -444,7 +444,7 @@ namespace Jammer
             {
                 return;
             }
-            Bass.ChannelPause(Utils.CurrentMusic);
+            Bass.ChannelPlay(Utils.CurrentMusic);
         }
 
         public static void PlaySong()
@@ -458,7 +458,7 @@ namespace Jammer
 
         public static void StopSong()
         {
-            Bass.ChannelPause(Utils.CurrentMusic);
+            Bass.ChannelStop(Utils.CurrentMusic);
         }
 
         public static void ResetMusic()

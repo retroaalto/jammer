@@ -56,7 +56,10 @@ namespace Jammer
             // AnsiConsole.WriteLine($"{Locale.OutsideItems.StartingUp} " + playlist);
             string playlistName = playlist;
             (string playlistPath, JammerPlaylistStream? stream) = GetJammerPlaylistPath(playlistName);
-            AnsiConsole.MarkupLine($"[green]{playlistPath}[/]---");
+            if (!Start.Headless)
+            {
+                AnsiConsole.MarkupLine($"[green]{playlistPath}[/]---");
+            }
             if (File.Exists(playlistPath) || URL.IsUrl(playlist))
             {
 
@@ -82,11 +85,15 @@ namespace Jammer
                     if (Utils.Songs.Length == 0)
                     {
                         Utils.CurrentSongIndex = 0;
-                        AnsiConsole.MarkupLine($"[red]{Locale.OutsideItems.PlaylistIsEmpty}[/]");
+                        if (Start.Headless)
+                            Console.WriteLine($"Playlist '{playlistName}' is empty.");
+                        else
+                            AnsiConsole.MarkupLine($"[red]{Locale.OutsideItems.PlaylistIsEmpty}[/]");
                     }
                     else
                     {
-                        AnsiConsole.MarkupLine($"[green]{Locale.OutsideItems.Playing} " + Start.Sanitize(playlistName) + "[/]");
+                        if (!Start.Headless)
+                            AnsiConsole.MarkupLine($"[green]{Locale.OutsideItems.Playing} " + Start.Sanitize(playlistName) + "[/]");
                     }
                 }
                 else

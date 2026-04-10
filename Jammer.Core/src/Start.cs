@@ -38,6 +38,8 @@ namespace Jammer
         public static int consoleWidth = Console.WindowWidth;
         public static int consoleHeight = Console.WindowHeight;
         public static bool CLI = false;
+        public static bool Headless = false;
+        public static string? HeadlessPlaylistName = null;
         public static double lastSeconds = -1;
         public static double lastPlaybackTime = -1;
         public static double treshhold = 1;
@@ -98,6 +100,52 @@ namespace Jammer
             }
             Log.Info("BASS initialized");
 
+            if (Headless)
+            {
+                // Headless mode: no TUI, no keyboard hook, no visualizer thread.
+                state = MainStates.idle;
+
+                // If -p <playlist> was given, load it now (after Bass.Init).
+                if (HeadlessPlaylistName != null)
+                {
+                    Playlists.Play(HeadlessPlaylistName, true);
+                    // Playlists.Play(name, true) sets Utils.Songs to [playlist-file-song-string].
+                    // PlaySong will expand it into actual tracks via HandleJammerPlaylist.
+                }
+
+                if (Utils.Songs.Length == 0)
+                {
+                    Console.WriteLine("No songs given. Exiting...");
+                    Environment.Exit(1);
+                }
+
+                // Do NOT call Absolute.Correctify here when a playlist name was given —
+                // the single-element array contains a song-string with an absolute path
+                // already resolved by Playlists.Play. Correctify would strip it.
+                if (HeadlessPlaylistName == null)
+                {
+                    Utils.Songs = Absolute.Correctify(Utils.Songs);
+                    if (Utils.Songs.Length == 0)
+                    {
+                        Console.WriteLine("No songs found. Exiting...");
+                        Environment.Exit(1);
+                    }
+                }
+
+                Utils.CurrentSongPath = Utils.Songs[0];
+                Utils.CurrentSongIndex = 0;
+                state = MainStates.playing;
+                Play.PlaySong(Utils.Songs, Utils.CurrentSongIndex);
+                // After PlaySong, if a .jammer playlist was given, Utils.Songs is now
+                // fully expanded to the individual tracks.
+
+                Console.CancelKeyPress += new ConsoleCancelEventHandler(Exit.OnExit);
+                AppDomain.CurrentDomain.ProcessExit += new EventHandler(Exit.OnProcessExit);
+
+                HeadlessLoop();
+                return;
+            }
+
             // Initialize the keyboard hook
             Log.Info("Initializing keyboard hook");
             InitializeSharpHook();
@@ -128,6 +176,59 @@ namespace Jammer
             visualizerThread = new Thread(EqualizerLoop);
             loopThread.Start();
             visualizerThread.Start();
+        }
+
+        private static void HeadlessLoop()
+        {
+            // Wait a tick for PlaySong / HandleJammerPlaylist to fully expand Utils.Songs.
+            Thread.Sleep(300);
+
+            int totalSongs = Utils.Songs.Length;
+            int played = 0;
+
+            if (totalSongs == 0)
+            {
+                Console.WriteLine("No songs to play. Exiting...");
+                Environment.Exit(1);
+                return;
+            }
+
+            Console.WriteLine($"Now playing ({Utils.CurrentSongIndex + 1}/{totalSongs}): {SongExtensions.Title(Utils.Songs[Utils.CurrentSongIndex])}");
+
+            while (true)
+            {
+                Thread.Sleep(500);
+
+                // Keep PreciseTime and SongDurationInSec up to date (used by MaybeNextSong / ShouldSkipRss).
+                Utils.PreciseTime = Bass.ChannelBytes2Seconds(Utils.CurrentMusic, Bass.ChannelGetPosition(Utils.CurrentMusic));
+                Utils.TotalMusicDurationInSec = Utils.PreciseTime;
+                Utils.SongDurationInSec = Bass.ChannelBytes2Seconds(Utils.CurrentMusic, Bass.ChannelGetLength(Utils.CurrentMusic));
+
+                // MaybeNextSong() (fired by SyncFlags.End callback) sets state to MainStates.next.
+                // Handle it here instead of in the TUI loop.
+                if (state == MainStates.next || state == MainStates.play)
+                {
+                    played++;
+                    if (played >= totalSongs)
+                    {
+                        Log.Info("Headless: queue finished.");
+                        Environment.Exit(0);
+                        return;
+                    }
+
+                    // Advance index and play next song.
+                    Utils.CurrentSongIndex = (Utils.CurrentSongIndex + 1) % Utils.Songs.Length;
+                    state = MainStates.playing;
+                    Play.PlaySong(Utils.Songs, Utils.CurrentSongIndex);
+                    Console.WriteLine($"Now playing ({Utils.CurrentSongIndex + 1}/{totalSongs}): {SongExtensions.Title(Utils.Songs[Utils.CurrentSongIndex])}");
+                }
+
+                // Also handle RSS skip if needed.
+                if (Play.ShouldSkipRss())
+                {
+                    Play.MaybeNextSong(forceNoLoop: true);
+                }
+            }
         }
 
         //
@@ -367,10 +468,10 @@ namespace Jammer
 
                 if (playerView == "default" || playerView == "all" || playerView == "rss")
                 {
-                    Thread.Sleep(16); // ~60 fps ceiling for the main render loop
+                    Thread.Sleep(state == MainStates.idle ? 50 : 16); // ~60 fps when active, ~20 fps when idle
                 }
                 else
-                    Thread.Sleep(16);
+                    Thread.Sleep(state == MainStates.idle ? 50 : 16);
             }
         }
 

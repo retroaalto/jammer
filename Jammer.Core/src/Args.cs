@@ -65,11 +65,29 @@ namespace Jammer
                         TUI.CliHelp();
                         Environment.Exit(0);
                         return;
+                    case "--headless":
+                    case "-H":
+                        Headless = true;
+                        List<string> headlessArgsList = new List<string>(args);
+                        headlessArgsList.RemoveAt(i);
+                        args = headlessArgsList.ToArray();
+                        Utils.Songs = args;
+                        i--;
+                        break;
                     case "--play":
                     case "-p":
                         if (args.Length > i + 1)
                         {
-                            Playlists.Play(args[i + 1], true);
+                            if (Headless)
+                            {
+                                // Defer playlist loading until after Bass.Init() in StartUp().
+                                Start.HeadlessPlaylistName = args[i + 1];
+                                i++; // skip the playlist name token
+                            }
+                            else
+                            {
+                                Playlists.Play(args[i + 1], true);
+                            }
                         }
                         else
                         {

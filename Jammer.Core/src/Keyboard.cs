@@ -1147,9 +1147,17 @@ namespace Jammer
 
         public static void ClearKeyboardBuffer()
         {
-            while (Console.KeyAvailable)
+            try
             {
-                Console.ReadKey(true); // Read and discard the key
+                while (Console.KeyAvailable)
+                {
+                    Console.ReadKey(true); // Read and discard the key
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Console.KeyAvailable throws when there is no interactive console
+                // (e.g. headless mode or redirected stdin). Safe to ignore.
             }
         }
 
