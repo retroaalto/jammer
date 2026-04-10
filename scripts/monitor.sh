@@ -28,10 +28,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── helpers ────────────────────────────────────────────────────────────────────
-log() { echo "$1" | tee -a "$OUTPUT"; }
-
 find_pid() {
-    # Prefer the inner Jammer binary (child of the AppImage wrapper).
     local pid
     pid=$(pgrep -n -f '/usr/bin/Jammer' 2>/dev/null || true)
     if [[ -z "$pid" ]]; then
@@ -40,46 +37,35 @@ find_pid() {
     echo "$pid"
 }
 
-# Read a single /proc/<pid>/stat field (1-indexed).
-proc_stat_field() {
-    local pid=$1 field=$2
-    awk "{print \$$field}" /proc/"$pid"/stat 2>/dev/null || echo 0
-}
-
-# Return total jiffies (utime+stime) for a pid or tid.
-total_jiffies() {
-    local statfile=$1
-    awk '{print $14+$15}' "$statfile" 2>/dev/null || echo 0
-}
-
-# Associative arrays to hold previous sample values.
-declare -A PREV_JIFFIES   # [pid_or_tid] = jiffies
-declare -A PREV_WALL      # [pid_or_tid] = epoch_ns (via date +%s%N)
-
-now_ns() { date +%s%N; }
-
 # CPU% from two jiffies samples and wall-clock nanoseconds.
-# Outputs single-core % (same as top default — can exceed 100% on multi-core).
+# Single-core % — same as top default (can exceed 100% on multi-core).
 cpu_percent() {
     local cur_j=$1 prev_j=$2 cur_ns=$3 prev_ns=$4
     local dj=$(( cur_j - prev_j ))
     local dns=$(( cur_ns - prev_ns ))
-    if [[ $dns -le 0 || $dj -lt 0 ]]; then echo "?"; return; fi
-    # dj jiffies / (dns nanoseconds / 1e9 seconds * CLK_TCK ticks/sec) * 100%
+    if [[ $dns -le 0 || $dj -lt 0 ]]; then echo "0.0"; return; fi
     awk "BEGIN { wall=$dns/1e9; ticks=$dj; hz=$CLK_TCK;
-                 if(wall>0) printf \"%.1f\", ticks/hz/wall*100; else print \"?\"; }"
+                 if(wall>0) printf \"%.1f\", ticks/hz/wall*100; else print \"0.0\"; }"
 }
+
+now_ns() { date +%s%N; }
+
+# ── persistent state (survives across loop iterations in the same shell) ───────
+declare -A PREV_JIFFIES=()
+declare -A PREV_WALL=()
 
 # ── startup ────────────────────────────────────────────────────────────────────
 mkdir -p "$(dirname "$OUTPUT")"
-: > "$OUTPUT"   # truncate / create
+: > "$OUTPUT"
 
-log "# jammer monitor started $(date '+%Y-%m-%d %H:%M:%S')"
-log "# interval=${INTERVAL}s  output=${OUTPUT}  clk_tck=${CLK_TCK}  sudo=${USE_SUDO}"
-log "# columns: timestamp PID cpu% mem_rss_KB threads fds"
-log "# thread lines:  T <tid> <name> cpu%"
-log "# child lines:   C <pid> <name> cpu%"
-log "#"
+{
+    echo "# jammer monitor started $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "# interval=${INTERVAL}s  output=${OUTPUT}  clk_tck=${CLK_TCK}  sudo=${USE_SUDO}"
+    echo "# P line: timestamp PID state cpu% rss threads fds"
+    echo "# T line: tid name cpu%   (threads with >0 cpu or ever had cpu)"
+    echo "# C line: child pid name cpu%"
+    echo "#"
+} | tee -a "$OUTPUT"
 
 echo "Watching for jammer... (Ctrl-C to stop)"
 echo "Logging to: $OUTPUT"
@@ -89,17 +75,15 @@ while true; do
     PID=$(find_pid)
 
     if [[ -z "$PID" ]]; then
-        log "[$(date '+%H:%M:%S')] jammer not found — waiting..."
+        echo "[$(date '+%H:%M:%S')] jammer not found — waiting..." | tee -a "$OUTPUT"
         sleep "$INTERVAL"
         continue
     fi
 
-    # Verify /proc entry still exists (process may have just exited).
     if [[ ! -d /proc/$PID ]]; then
-        log "[$(date '+%H:%M:%S')] PID=$PID vanished"
-        unset PREV_JIFFIES PREV_WALL
-        declare -A PREV_JIFFIES
-        declare -A PREV_WALL
+        echo "[$(date '+%H:%M:%S')] PID=$PID vanished" | tee -a "$OUTPUT"
+        PREV_JIFFIES=()
+        PREV_WALL=()
         sleep "$INTERVAL"
         continue
     fi
@@ -107,15 +91,15 @@ while true; do
     TS=$(date '+%H:%M:%S')
     NOW=$(now_ns)
 
-    # ── main process stat ──────────────────────────────────────────────────────
+    # ── main process ──────────────────────────────────────────────────────────
     STATLINE=$(cat /proc/$PID/stat 2>/dev/null || true)
-    if [[ -z "$STATLINE" ]]; then sleep "$INTERVAL"; continue; fi
+    [[ -z "$STATLINE" ]] && { sleep "$INTERVAL"; continue; }
 
     CUR_J=$(echo "$STATLINE" | awk '{print $14+$15}')
-    RSS_KB=$(awk '/VmRSS/{print $2}' /proc/$PID/status 2>/dev/null || echo 0)
+    STATE=$(echo "$STATLINE"  | awk '{print $3}')
+    RSS_KB=$(awk '/VmRSS/{print $2}'  /proc/$PID/status 2>/dev/null || echo 0)
     NUM_THREADS=$(awk '/Threads/{print $2}' /proc/$PID/status 2>/dev/null || echo 0)
     FDS=$(ls /proc/$PID/fd 2>/dev/null | wc -l || echo 0)
-    STATE=$(echo "$STATLINE" | awk '{print $3}')
 
     if [[ -n "${PREV_JIFFIES[$PID]:-}" ]]; then
         PCPU=$(cpu_percent "$CUR_J" "${PREV_JIFFIES[$PID]}" "$NOW" "${PREV_WALL[$PID]}")
@@ -125,64 +109,61 @@ while true; do
     PREV_JIFFIES[$PID]=$CUR_J
     PREV_WALL[$PID]=$NOW
 
-    # Children (live subprocesses).
-    mapfile -t CHILD_LINES < <(
-        while read -r CPID CCOMM; do
-            [[ -z "$CPID" || "$CPID" == "PID" ]] && continue
-            CJ=$(total_jiffies /proc/$CPID/stat)
-            if [[ -n "${PREV_JIFFIES[c$CPID]:-}" ]]; then
-                CC=$(cpu_percent "$CJ" "${PREV_JIFFIES[c$CPID]}" "$NOW" "${PREV_WALL[c$CPID]}")
-            else
-                CC="?"
-            fi
-            PREV_JIFFIES[c$CPID]=$CJ
-            PREV_WALL[c$CPID]=$NOW
-            echo "  C $CPID $CCOMM cpu=${CC}%"
-        done < <(ps --ppid "$PID" -o pid=,comm= 2>/dev/null || true)
-    )
+    # Build output in a string — no subshells, so PREV_* arrays stay writable.
+    OUT="[$TS] PID=$PID state=$STATE cpu=${PCPU}% rss=${RSS_KB}KB threads=$NUM_THREADS fds=$FDS"$'\n'
 
     # ── per-thread breakdown ───────────────────────────────────────────────────
-    mapfile -t THREAD_LINES < <(
-        for TSTAT in /proc/$PID/task/*/stat; do
-            [[ -f "$TSTAT" ]] || continue
-            TID=$(echo "$TSTAT" | grep -o 'task/[0-9]*' | cut -d/ -f2)
-            TCOMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null | tr -d '\n' || echo "?")
-            TJ=$(awk '{print $14+$15}' "$TSTAT" 2>/dev/null || echo 0)
-            KEY="t${TID}"
-            if [[ -n "${PREV_JIFFIES[$KEY]:-}" ]]; then
-                TC=$(cpu_percent "$TJ" "${PREV_JIFFIES[$KEY]}" "$NOW" "${PREV_WALL[$KEY]}")
-            else
-                TC="?"
-            fi
-            PREV_JIFFIES[$KEY]=$TJ
-            PREV_WALL[$KEY]=$NOW
-            # Only log threads that have ever consumed CPU.
-            if [[ "$TC" != "0.0" && "$TC" != "?" ]] || [[ "$TJ" != "0" ]]; then
-                printf "  T %-7s %-20s cpu=%s%%\n" "$TID" "$TCOMM" "$TC"
-            fi
-        done
-    )
+    HAS_THREAD=0
+    for TSTAT in /proc/$PID/task/*/stat; do
+        [[ -f "$TSTAT" ]] || continue
+        TID="${TSTAT#/proc/$PID/task/}"; TID="${TID%/stat}"
+        TCOMM=$(cat /proc/$PID/task/$TID/comm 2>/dev/null | tr -d '\n' || echo "?")
+        TJ=$(awk '{print $14+$15}' "$TSTAT" 2>/dev/null || echo 0)
+        KEY="t${TID}"
+        if [[ -n "${PREV_JIFFIES[$KEY]:-}" ]]; then
+            TC=$(cpu_percent "$TJ" "${PREV_JIFFIES[$KEY]}" "$NOW" "${PREV_WALL[$KEY]}")
+        else
+            TC="?"
+        fi
+        PREV_JIFFIES[$KEY]=$TJ
+        PREV_WALL[$KEY]=$NOW
+        # Print thread if it has ever had jiffies (filters idle .NET pool threads)
+        if [[ "$TJ" != "0" ]]; then
+            OUT+=$(printf "  T %-7s %-20s cpu=%s%%\n" "$TID" "$TCOMM" "$TC")
+            OUT+=$'\n'
+            HAS_THREAD=1
+        fi
+    done
+    [[ $HAS_THREAD -eq 0 ]] && OUT+="  T [none with cpu]"$'\n'
 
-    # ── perf stat (sudo only, 1-second sample) ─────────────────────────────────
-    PERF_LINE=""
+    # ── children ──────────────────────────────────────────────────────────────
+    HAS_CHILD=0
+    while read -r CPID CCOMM; do
+        [[ -z "$CPID" || "$CPID" == "PID" ]] && continue
+        CJ=$(awk '{print $14+$15}' /proc/$CPID/stat 2>/dev/null || echo 0)
+        KEY="c${CPID}"
+        if [[ -n "${PREV_JIFFIES[$KEY]:-}" ]]; then
+            CC=$(cpu_percent "$CJ" "${PREV_JIFFIES[$KEY]}" "$NOW" "${PREV_WALL[$KEY]}")
+        else
+            CC="?"
+        fi
+        PREV_JIFFIES[$KEY]=$CJ
+        PREV_WALL[$KEY]=$NOW
+        OUT+=$(printf "  C %-7s %-20s cpu=%s%%\n" "$CPID" "$CCOMM" "$CC")
+        OUT+=$'\n'
+        HAS_CHILD=1
+    done < <(ps --ppid "$PID" -o pid=,comm= 2>/dev/null || true)
+    [[ $HAS_CHILD -eq 0 ]] && OUT+="  C [none]"$'\n'
+
+    # ── perf stat (sudo only) ──────────────────────────────────────────────────
     if [[ $USE_SUDO -eq 1 ]] && command -v perf &>/dev/null; then
         PERF_OUT=$(sudo perf stat -p "$PID" -e cycles,instructions,cache-misses \
                    --interval-print 1000 -- sleep 1 2>&1 | \
                    awk '/cycles|instructions|cache/{printf "%s=%s ", $3, $1}' || true)
-        PERF_LINE="  perf: $PERF_OUT"
+        OUT+="  perf: $PERF_OUT"$'\n'
     fi
 
-    # ── write log line ─────────────────────────────────────────────────────────
-    {
-        echo "[$TS] PID=$PID state=$STATE cpu=${PCPU}% rss=${RSS_KB}KB threads=$NUM_THREADS fds=$FDS"
-        if [[ ${#CHILD_LINES[@]} -eq 0 ]]; then
-            echo "  C [none]"
-        else
-            printf '%s\n' "${CHILD_LINES[@]}"
-        fi
-        printf '%s\n' "${THREAD_LINES[@]}"
-        [[ -n "$PERF_LINE" ]] && echo "$PERF_LINE"
-    } | tee -a "$OUTPUT"
+    printf '%s' "$OUT" | tee -a "$OUTPUT"
 
     sleep "$INTERVAL"
 done
