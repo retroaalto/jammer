@@ -35,7 +35,8 @@ namespace Jammer
             songPath = "";
             constructedSong = null;
 
-            Debug.dprint($"{Locale.OutsideItems.Downloading}: " + url.ToString());
+            int tid = Environment.CurrentManagedThreadId;
+            Debug.dprint($"[tid={tid}] DownloadSong begin: {url}");
             try
             {
                 if (URL.IsValidSoundcloudSong(url))
@@ -81,6 +82,7 @@ namespace Jammer
             }
 
             Start.drawWhole = true;
+            Debug.dprint($"[tid={tid}] DownloadSong end: path={songPath}");
             return (songPath, constructedSong);
         }
 

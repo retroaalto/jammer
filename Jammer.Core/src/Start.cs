@@ -124,8 +124,8 @@ namespace Jammer
             AppDomain.CurrentDomain.ProcessExit += new EventHandler(Exit.OnProcessExit);
 
             Debug.dprint("Start Loop");
-            loopThread = new Thread(Loop);
-            visualizerThread = new Thread(EqualizerLoop);
+            loopThread = new Thread(Loop) { Name = "MainLoop" };
+            visualizerThread = new Thread(EqualizerLoop) { Name = "EqualizerLoop" };
             loopThread.Start();
             visualizerThread.Start();
         }

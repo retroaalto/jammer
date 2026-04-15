@@ -1,4 +1,5 @@
 using System.IO;
+using System.Collections.Generic;
 
 namespace Jammer
 {
@@ -16,6 +17,10 @@ namespace Jammer
         private static long     _lastJiffies    = -1;
         private static DateTime _lastJiffySample = DateTime.MinValue;
         private static readonly long TicksPerSecond = GetTicksPerSecond();
+
+        // Per-thread jiffies from previous dperf() call: tid -> jiffies.
+        private static Dictionary<int, long> _lastThreadJiffies = new();
+        private static DateTime _lastThreadSample = DateTime.MinValue;
 
         private static long GetTicksPerSecond()
         {
@@ -71,6 +76,61 @@ namespace Jammer
                 return result;
             }
             catch { return "?"; }
+        }
+
+        /// <summary>
+        /// Reads per-thread CPU% from /proc/self/task/*/stat, returns a compact
+        /// string listing threads that consumed >= 1% since the last call.
+        /// Format: "tid=NAME:CPU% tid=NAME:CPU% ..."  (unnamed threads show tid only)
+        /// Only available on Linux; returns "" on other platforms or on error.
+        /// </summary>
+        private static string ReadPerThreadCpu(DateTime now)
+        {
+            try
+            {
+                double wallSec = _lastThreadSample == DateTime.MinValue
+                    ? 0
+                    : (now - _lastThreadSample).TotalSeconds;
+
+                var taskDir = $"/proc/{System.Diagnostics.Process.GetCurrentProcess().Id}/task";
+                if (!Directory.Exists(taskDir)) return "";
+
+                var newJiffies = new Dictionary<int, long>();
+                var results    = new List<string>();
+
+                foreach (var tidDir in Directory.GetDirectories(taskDir))
+                {
+                    var statPath = Path.Combine(tidDir, "stat");
+                    var commPath = Path.Combine(tidDir, "comm");
+                    if (!File.Exists(statPath)) continue;
+
+                    if (!int.TryParse(Path.GetFileName(tidDir), out int tid)) continue;
+
+                    var fields = File.ReadAllText(statPath).Split(' ');
+                    if (fields.Length < 15) continue;
+                    long utime = long.Parse(fields[13]);
+                    long stime = long.Parse(fields[14]);
+                    long j = utime + stime;
+                    newJiffies[tid] = j;
+
+                    if (wallSec > 0 && _lastThreadJiffies.TryGetValue(tid, out long prevJ))
+                    {
+                        double cpu = (j - prevJ) / (wallSec * TicksPerSecond) * 100.0;
+                        if (cpu >= 1.0)
+                        {
+                            string name = File.Exists(commPath)
+                                ? File.ReadAllText(commPath).Trim()
+                                : tid.ToString();
+                            results.Add($"tid={tid}({name}):{cpu:F1}%");
+                        }
+                    }
+                }
+
+                _lastThreadJiffies = newJiffies;
+                _lastThreadSample  = now;
+                return string.Join(" ", results);
+            }
+            catch { return ""; }
         }
 
         /// <summary>
@@ -137,16 +197,20 @@ namespace Jammer
                 _lastCpuTime   = currentCpuTime;
                 _lastCpuSample = now;
 
-                string cpuOsStr = ReadProcStatCpu();
+                string cpuOsStr     = ReadProcStatCpu();
+                string threadCpuStr = ReadPerThreadCpu(now);
 
                 Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
                 using var writer = new StreamWriter(LogPath, append: true);
-                writer.WriteLine(
+                var line =
                     $"{now:HH:mm:ss.fff};PERF;{label}: " +
                     $"cpu={cpuStr} cpu_os={cpuOsStr} " +
                     $"heap={heapBytes / 1024}KB " +
                     $"gc0={gen0} gc1={gen1} gc2={gen2} " +
-                    $"threads={threads}");
+                    $"threads={threads}";
+                if (!string.IsNullOrEmpty(threadCpuStr))
+                    line += $" | {threadCpuStr}";
+                writer.WriteLine(line);
             }
             catch { }
         }

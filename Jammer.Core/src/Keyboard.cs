@@ -1155,6 +1155,7 @@ namespace Jammer
 
         public static async void InitializeSharpHook()
         {
+            Thread.CurrentThread.Name = "SharpHook";
             var hook = new TaskPoolGlobalHook();
             hook.KeyReleased += OnKeyReleased;     // EventHandler<KeyboardHookEventArgs>
             await hook.RunAsync();
