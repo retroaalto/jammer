@@ -37,6 +37,7 @@ PausingEffect = true
 
 
         public static int refreshTime = 33; // Default visualizer refresh interval in ms (~30 fps)
+        private static StringBuilder _frequencyBuilder = new StringBuilder(256);
         public static int bufferSize = 41000; // FFT data buffer size
         public static string dataFlags = "FFT4098"; // FFT data flags
         public static int minFrequency = 50; // Minimum frequency
@@ -109,7 +110,8 @@ PausingEffect = true
             // Calculate this value once before the loop
             int maxLength = Math.Max(length - 43, 1);
 
-            StringBuilder frequencyBuilder = new StringBuilder(frequencyCount);
+            StringBuilder frequencyBuilder = _frequencyBuilder;
+            frequencyBuilder.Clear();
 
             // Iterate through the FFT data and map values to ASCII characters
             for (int i = 0; i < frequencyCount; i++)
