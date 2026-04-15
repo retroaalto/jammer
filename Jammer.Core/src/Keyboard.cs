@@ -1044,7 +1044,7 @@ namespace Jammer
         {
             if (onlyPause)
             {
-                Bass.ChannelPause(Utils.CurrentMusic);
+                Play.PauseSong();
                 state = MainStates.pause;
                 return;
             }

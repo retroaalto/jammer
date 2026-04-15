@@ -433,9 +433,20 @@ namespace Jammer
             return true;
         }
 
+        // Byte position saved when the channel is stopped via PauseSong()/StopSong().
+        // Restored on the next PlaySong() / ResumeSong() call so playback continues
+        // from the same spot.  -1 means no saved position.
+        // Background: Bass.ChannelPause() on Linux keeps the BASS decode thread
+        // spinning at ~90% CPU.  Bass.ChannelStop() idles it properly.
+        private static long _pausedPosition = -1;
+
         public static void PauseSong()
         {
-            Bass.ChannelPause(Utils.CurrentMusic);
+            if (Utils.CurrentMusic != 0)
+            {
+                _pausedPosition = Bass.ChannelGetPosition(Utils.CurrentMusic);
+                Bass.ChannelStop(Utils.CurrentMusic);
+            }
         }
 
         public static void ResumeSong()
@@ -444,7 +455,15 @@ namespace Jammer
             {
                 return;
             }
-            Bass.ChannelPause(Utils.CurrentMusic);
+            if (Utils.CurrentMusic != 0)
+            {
+                if (_pausedPosition >= 0)
+                {
+                    Bass.ChannelSetPosition(Utils.CurrentMusic, _pausedPosition);
+                    _pausedPosition = -1;
+                }
+                Bass.ChannelPlay(Utils.CurrentMusic, false);
+            }
         }
 
         public static void PlaySong()
@@ -453,12 +472,21 @@ namespace Jammer
             {
                 return;
             }
-            Bass.ChannelPlay(Utils.CurrentMusic);
+            if (_pausedPosition >= 0 && Utils.CurrentMusic != 0)
+            {
+                Bass.ChannelSetPosition(Utils.CurrentMusic, _pausedPosition);
+                _pausedPosition = -1;
+            }
+            Bass.ChannelPlay(Utils.CurrentMusic, false);
         }
 
         public static void StopSong()
         {
-            Bass.ChannelPause(Utils.CurrentMusic);
+            if (Utils.CurrentMusic != 0)
+            {
+                _pausedPosition = Bass.ChannelGetPosition(Utils.CurrentMusic);
+                Bass.ChannelStop(Utils.CurrentMusic);
+            }
         }
 
         public static void ResetMusic()
@@ -467,6 +495,7 @@ namespace Jammer
             {
                 Bass.StreamFree(Utils.CurrentMusic);
             }
+            _pausedPosition = -1;
             Start.drawWhole = true;
         }
         public static void NextSong()
@@ -670,7 +699,7 @@ namespace Jammer
                     {
                         Bass.ChannelSetPosition(Utils.CurrentMusic, Bass.ChannelGetLength(Utils.CurrentMusic));
                         Start.state = MainStates.idle;
-                        Bass.ChannelPause(Utils.CurrentMusic);
+                        Bass.ChannelStop(Utils.CurrentMusic);
                     }
                     else
                     {
@@ -683,7 +712,7 @@ namespace Jammer
                     {
                         Bass.ChannelSetPosition(Utils.CurrentMusic, Bass.ChannelGetLength(Utils.CurrentMusic));
                         Start.state = MainStates.pause;
-                        Bass.ChannelPause(Utils.CurrentMusic);
+                        Bass.ChannelStop(Utils.CurrentMusic);
                     }
                     else if (Preferences.isShuffle)
                     {
