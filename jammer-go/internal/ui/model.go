@@ -1,30 +1,57 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jooapa/jammer/jammer-go/internal/downloader"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
+	"github.com/jooapa/jammer/jammer-go/internal/playlist"
 )
 
-// tickMsg is sent on a timer tick to refresh progress.
+// ── Messages ──────────────────────────────────────────────────────────────────
+
 type tickMsg time.Time
 
-// trackChangedMsg is sent when the track changes.
-type trackChangedMsg int
+type downloadProgressMsg struct {
+	index int
+	prog  downloader.Progress
+}
+
+type downloadDoneMsg struct {
+	index int
+	path  string
+	err   error
+}
+
+// ── Views ─────────────────────────────────────────────────────────────────────
+
+type viewKind int
+
+const (
+	viewSongs     viewKind = iota // song list
+	viewPlaylists                 // playlist browser
+)
+
+// ── Download state per song ───────────────────────────────────────────────────
+
+type dlState struct {
+	active  bool
+	frac    float64
+	message string
+	err     error
+}
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 var (
-	styleBorder = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("63")).
-			Padding(0, 1)
-
 	styleTitle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("212")).
 			Bold(true)
@@ -52,31 +79,68 @@ var (
 
 	styleVolume = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214"))
+
+	styleNotDL = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
+
+	styleDLing = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("220"))
+
+	styleErr = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196"))
+
+	styleTabActive = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("212")).
+			Bold(true).
+			Underline(true)
+
+	styleTabInactive = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("241"))
 )
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
-// Model is the Bubble Tea model for the jammer TUI.
 type Model struct {
-	p       *player.Player
-	songs   []player.Song
-	cursor  int // list cursor position
-	offset  int // scroll offset
-	height  int
-	width   int
-	pos     float64
-	dur     float64
-	playing int // currently playing index
+	// core
+	p        *player.Player
+	songsDir string
+	plsDir   string
+
+	// view
+	view   viewKind
+	width  int
+	height int
+
+	// songs view
+	songs    []player.Song
+	scursor  int
+	soffset  int
+	playing  int
+	pos, dur float64
+	dlStates map[int]*dlState
+
+	// playlists view
+	playlists []string // filenames (basename only) in plsDir
+	pcursor   int
+	poffset   int
 }
 
-// New returns a new TUI Model.
-func New(p *player.Player) Model {
-	songs := p.Songs()
-	return Model{
-		p:      p,
-		songs:  songs,
-		cursor: 0,
+func New(p *player.Player, songsDir, plsDir string) Model {
+	m := Model{
+		p:        p,
+		songsDir: songsDir,
+		plsDir:   plsDir,
+		songs:    p.Songs(),
+		playing:  p.Index(),
+		dlStates: make(map[int]*dlState),
 	}
+	m.reloadPlaylists()
+	return m
+}
+
+func (m *Model) reloadPlaylists() {
+	names, _ := playlist.List(m.plsDir)
+	m.playlists = names
 }
 
 func tick() tea.Cmd {
@@ -88,6 +152,8 @@ func tick() tea.Cmd {
 func (m Model) Init() tea.Cmd {
 	return tick()
 }
+
+// ── Update ────────────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -104,87 +170,208 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.songs = m.p.Songs()
 		return m, tick()
 
-	case trackChangedMsg:
-		m.playing = int(msg)
-		m.cursor = m.playing
-		m.clampScroll()
+	case downloadProgressMsg:
+		ds := m.getOrCreateDlState(msg.index)
+		ds.active = !msg.prog.Done
+		ds.frac = msg.prog.Frac
+		ds.message = msg.prog.Message
+		if msg.prog.Done {
+			ds.active = false
+		}
+
+	case downloadDoneMsg:
+		ds := m.getOrCreateDlState(msg.index)
+		ds.active = false
+		if msg.err != nil {
+			ds.err = msg.err
+			ds.frac = 0
+		} else {
+			ds.frac = 1
+			ds.err = nil
+			m.p.UpdateSongPath(msg.index, msg.path)
+			m.songs = m.p.Songs()
+		}
 
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			m.p.Stop()
-			return m, tea.Quit
-
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-				m.clampScroll()
-			}
-
-		case "down", "j":
-			if m.cursor < len(m.songs)-1 {
-				m.cursor++
-				m.clampScroll()
-			}
-
-		case "enter", " ":
-			if m.cursor == m.playing && m.p.State() != player.StateStopped {
-				_ = m.p.Pause()
-			} else {
-				_ = m.p.PlayIndex(m.cursor)
-				m.playing = m.cursor
-			}
-
-		case "p":
-			_ = m.p.Pause()
-
-		case "s":
-			m.p.Stop()
-
-		case "n":
-			_ = m.p.Next()
-			m.playing = m.p.Index()
-			m.cursor = m.playing
-			m.clampScroll()
-
-		case "b":
-			_ = m.p.Prev()
-			m.playing = m.p.Index()
-			m.cursor = m.playing
-			m.clampScroll()
-
-		case "right", "l":
-			m.p.SeekForward(10)
-
-		case "left", "h":
-			m.p.SeekBackward(10)
-
-		case "+", "=":
-			vol := m.p.Volume() + 0.05
-			m.p.SetVolume(vol)
-
-		case "-":
-			vol := m.p.Volume() - 0.05
-			m.p.SetVolume(vol)
-		}
+		return m.handleKey(msg)
 	}
 
 	return m, nil
 }
 
-func (m *Model) clampScroll() {
-	listH := m.listHeight()
-	if m.cursor < m.offset {
-		m.offset = m.cursor
+func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		m.p.Stop()
+		return m, tea.Quit
+
+	case "tab":
+		if m.view == viewSongs {
+			m.view = viewPlaylists
+			m.reloadPlaylists()
+		} else {
+			m.view = viewSongs
+		}
+
+	default:
+		if m.view == viewPlaylists {
+			return m.handlePlaylistKey(msg)
+		}
+		return m.handleSongKey(msg)
 	}
-	if m.cursor >= m.offset+listH {
-		m.offset = m.cursor - listH + 1
+	return m, nil
+}
+
+func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.scursor > 0 {
+			m.scursor--
+			m.clampSongScroll()
+		}
+	case "down", "j":
+		if m.scursor < len(m.songs)-1 {
+			m.scursor++
+			m.clampSongScroll()
+		}
+	case "enter", " ":
+		if m.scursor == m.playing && m.p.State() != player.StateStopped {
+			_ = m.p.Pause()
+		} else {
+			_ = m.p.PlayIndex(m.scursor)
+			m.playing = m.scursor
+		}
+	case "p":
+		_ = m.p.Pause()
+	case "s":
+		m.p.Stop()
+	case "n":
+		_ = m.p.Next()
+		m.playing = m.p.Index()
+		m.scursor = m.playing
+		m.clampSongScroll()
+	case "b":
+		_ = m.p.Prev()
+		m.playing = m.p.Index()
+		m.scursor = m.playing
+		m.clampSongScroll()
+	case "right", "l":
+		m.p.SeekForward(10)
+	case "left", "h":
+		m.p.SeekBackward(10)
+	case "+", "=":
+		m.p.SetVolume(m.p.Volume() + 0.05)
+	case "-":
+		m.p.SetVolume(m.p.Volume() - 0.05)
+	case "d":
+		return m, m.startDownload(m.scursor)
+	}
+	return m, nil
+}
+
+func (m Model) handlePlaylistKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.pcursor > 0 {
+			m.pcursor--
+			m.clampPLScroll()
+		}
+	case "down", "j":
+		if m.pcursor < len(m.playlists)-1 {
+			m.pcursor++
+			m.clampPLScroll()
+		}
+	case "enter", " ":
+		if m.pcursor >= 0 && m.pcursor < len(m.playlists) {
+			m.loadPlaylist(m.playlists[m.pcursor])
+			m.view = viewSongs
+			m.scursor = 0
+			m.soffset = 0
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) loadPlaylist(filename string) {
+	path := filepath.Join(m.plsDir, filename)
+	entries, err := playlist.Load(path, m.songsDir)
+	if err != nil {
+		return
+	}
+	m.p.LoadPlaylist(entries)
+	m.songs = m.p.Songs()
+	m.dlStates = make(map[int]*dlState)
+}
+
+// startDownload kicks off a download for song at index i.
+func (m Model) startDownload(i int) tea.Cmd {
+	if i < 0 || i >= len(m.songs) {
+		return nil
+	}
+	song := m.songs[i]
+	if song.URL == "" || song.Downloaded() {
+		return nil
+	}
+	ds := m.getOrCreateDlState(i)
+	if ds.active {
+		return nil // already running
+	}
+	ds.active = true
+	ds.frac = 0
+	ds.err = nil
+
+	progressCh := make(chan downloader.Progress, 20)
+
+	// Goroutine: run download and send messages back to the model.
+	return func() tea.Msg {
+		ctx := context.Background()
+		// Fan out progress updates as tea commands
+		go func() {
+			for p := range progressCh {
+				// We can't send directly from a goroutine; we use a batch
+				// approach by letting the progress channel drain and sending
+				// a final done message. For richer live updates, we'd use
+				// tea.Program.Send — but for simplicity we just report done.
+				_ = p
+			}
+		}()
+
+		path, err := downloader.Download(ctx, song.URL, m.songsDir, progressCh)
+		return downloadDoneMsg{index: i, path: path, err: err}
 	}
 }
 
-func (m Model) listHeight() int {
-	// reserve: title(1) + gap(1) + nowplaying(2) + progress(1) + volume(1) + help(2) + borders(2)
-	reserved := 12
+func (m Model) getOrCreateDlState(i int) *dlState {
+	if m.dlStates[i] == nil {
+		m.dlStates[i] = &dlState{}
+	}
+	return m.dlStates[i]
+}
+
+// ── Scroll helpers ────────────────────────────────────────────────────────────
+
+func (m *Model) clampSongScroll() {
+	lh := m.songListHeight()
+	if m.scursor < m.soffset {
+		m.soffset = m.scursor
+	}
+	if m.scursor >= m.soffset+lh {
+		m.soffset = m.scursor - lh + 1
+	}
+}
+
+func (m *Model) clampPLScroll() {
+	lh := m.plListHeight()
+	if m.pcursor < m.poffset {
+		m.poffset = m.pcursor
+	}
+	if m.pcursor >= m.poffset+lh {
+		m.poffset = m.pcursor - lh + 1
+	}
+}
+
+func (m Model) songListHeight() int {
+	reserved := 14
 	h := m.height - reserved
 	if h < 4 {
 		h = 4
@@ -192,28 +379,62 @@ func (m Model) listHeight() int {
 	return h
 }
 
+func (m Model) plListHeight() int {
+	reserved := 6
+	h := m.height - reserved
+	if h < 4 {
+		h = 4
+	}
+	return h
+}
+
+// ── View ──────────────────────────────────────────────────────────────────────
+
 func (m Model) View() tea.View {
 	if m.width == 0 {
 		v := tea.NewView("loading...")
 		v.AltScreen = true
 		return v
 	}
-
 	var b strings.Builder
 
-	// ── Header ────────────────────────────────────────────────────────────────
-	b.WriteString(styleTitle.Render("  jammer") + "\n\n")
+	// ── Tabs ──────────────────────────────────────────────────────────────────
+	songs := styleTabInactive.Render("Songs")
+	pls := styleTabInactive.Render("Playlists")
+	if m.view == viewSongs {
+		songs = styleTabActive.Render("Songs")
+	} else {
+		pls = styleTabActive.Render("Playlists")
+	}
+	b.WriteString(styleTitle.Render("  jammer") + "  " + songs + "  " + pls + "\n\n")
 
-	// ── Song list ─────────────────────────────────────────────────────────────
-	listH := m.listHeight()
-	end := m.offset + listH
+	if m.view == viewPlaylists {
+		b.WriteString(m.renderPlaylists())
+	} else {
+		b.WriteString(m.renderSongs())
+	}
+
+	v := tea.NewView(b.String())
+	v.AltScreen = true
+	return v
+}
+
+// ── Songs view ────────────────────────────────────────────────────────────────
+
+func (m Model) renderSongs() string {
+	var b strings.Builder
+
+	lh := m.songListHeight()
+	end := m.soffset + lh
 	if end > len(m.songs) {
 		end = len(m.songs)
 	}
 
-	for i := m.offset; i < end; i++ {
-		title := truncate(m.songs[i].Title, m.width-8)
+	for i := m.soffset; i < end; i++ {
+		song := m.songs[i]
+		title := truncate(song.DisplayTitle(), m.width-12)
 
+		// Left status prefix
 		prefix := "  "
 		if i == m.playing {
 			switch m.p.State() {
@@ -226,59 +447,110 @@ func (m Model) View() tea.View {
 			}
 		}
 
+		// Right download status
+		suffix := ""
+		if ds, ok := m.dlStates[i]; ok && ds != nil {
+			switch {
+			case ds.active:
+				pct := int(ds.frac * 100)
+				suffix = styleDLing.Render(fmt.Sprintf(" [%d%%]", pct))
+			case ds.err != nil:
+				suffix = styleErr.Render(" [err]")
+			case ds.frac >= 1:
+				suffix = stylePlaying.Render(" [ok]")
+			}
+		} else if !song.Downloaded() {
+			suffix = styleNotDL.Render(" [dl]")
+		}
+
 		line := prefix + title
 
+		var rendered string
 		switch {
-		case i == m.cursor && i == m.playing:
-			b.WriteString(styleSelected.Render(line))
-		case i == m.cursor:
-			b.WriteString(styleSelected.Render(line))
+		case !song.Downloaded() && (m.dlStates[i] == nil || !m.dlStates[i].active):
+			if i == m.scursor {
+				rendered = styleSelected.Render(line)
+			} else {
+				rendered = styleNotDL.Render(line)
+			}
+		case i == m.scursor && i == m.playing:
+			rendered = styleSelected.Render(line)
+		case i == m.scursor:
+			rendered = styleSelected.Render(line)
 		case i == m.playing:
-			b.WriteString(stylePlaying.Render(line))
+			rendered = stylePlaying.Render(line)
 		default:
-			b.WriteString(styleNormal.Render(line))
+			rendered = styleNormal.Render(line)
 		}
-		b.WriteByte('\n')
+		b.WriteString(rendered + suffix + "\n")
 	}
 
-	// scroll indicator
-	if len(m.songs) > listH {
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  %d-%d / %d", m.offset+1, end, len(m.songs))))
+	if len(m.songs) > lh {
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  %d-%d / %d", m.soffset+1, end, len(m.songs))))
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
 
-	// ── Now playing ───────────────────────────────────────────────────────────
+	// Now playing
 	nowTitle := "—"
 	if m.playing >= 0 && m.playing < len(m.songs) {
-		nowTitle = truncate(m.songs[m.playing].Title, m.width-12)
+		nowTitle = truncate(m.songs[m.playing].DisplayTitle(), m.width-12)
 	}
-	stateIcon := " "
+	icon := " "
 	switch m.p.State() {
 	case player.StatePlaying:
-		stateIcon = "▶"
+		icon = "▶"
 	case player.StatePaused:
-		stateIcon = "⏸"
+		icon = "⏸"
 	case player.StateStopped:
-		stateIcon = "■"
+		icon = "■"
 	}
-	b.WriteString(styleTitle.Render(fmt.Sprintf(" %s  %s", stateIcon, nowTitle)) + "\n")
-
-	// ── Progress bar ──────────────────────────────────────────────────────────
+	b.WriteString(styleTitle.Render(fmt.Sprintf(" %s  %s", icon, nowTitle)) + "\n")
 	b.WriteString(" " + m.progressBar() + "\n")
-
-	// ── Volume ────────────────────────────────────────────────────────────────
 	vol := int(math.Round(float64(m.p.Volume()) * 100))
 	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s", vol, m.volumeBar())) + "\n\n")
 
-	// ── Help ──────────────────────────────────────────────────────────────────
-	b.WriteString(styleHelp.Render(" enter/space: play  p: pause  s: stop  n: next  b: prev") + "\n")
-	b.WriteString(styleHelp.Render(" ←/→: seek 10s  +/-: volume  q: quit") + "\n")
-
-	v := tea.NewView(b.String())
-	v.AltScreen = true
-	return v
+	b.WriteString(styleHelp.Render(" enter: play  p: pause  s: stop  n: next  b: prev  d: download") + "\n")
+	b.WriteString(styleHelp.Render(" ←/→: seek 10s  +/-: volume  tab: playlists  q: quit") + "\n")
+	return b.String()
 }
+
+// ── Playlists view ────────────────────────────────────────────────────────────
+
+func (m Model) renderPlaylists() string {
+	var b strings.Builder
+
+	if len(m.playlists) == 0 {
+		b.WriteString(styleNotDL.Render("  No playlists found in "+m.plsDir) + "\n")
+	} else {
+		lh := m.plListHeight()
+		end := m.poffset + lh
+		if end > len(m.playlists) {
+			end = len(m.playlists)
+		}
+		for i := m.poffset; i < end; i++ {
+			name := strings.TrimSuffix(m.playlists[i], filepath.Ext(m.playlists[i]))
+			name = truncate(name, m.width-4)
+			line := "  " + name
+			if i == m.pcursor {
+				b.WriteString(styleSelected.Render(line))
+			} else {
+				b.WriteString(styleNormal.Render(line))
+			}
+			b.WriteByte('\n')
+		}
+		if len(m.playlists) > lh {
+			b.WriteString(styleHelp.Render(fmt.Sprintf("  %d-%d / %d", m.poffset+1, end, len(m.playlists))))
+			b.WriteByte('\n')
+		}
+	}
+
+	b.WriteByte('\n')
+	b.WriteString(styleHelp.Render(" enter: load playlist  ↑/↓: navigate  tab: back to songs  q: quit") + "\n")
+	return b.String()
+}
+
+// ── Progress bars ─────────────────────────────────────────────────────────────
 
 func (m Model) progressBar() string {
 	barW := m.width - 20
@@ -295,11 +567,7 @@ func (m Model) progressBar() string {
 	}
 	bar := styleBarFill.Render(strings.Repeat("━", filled)) +
 		styleBar.Render(strings.Repeat("─", barW-filled))
-	return fmt.Sprintf("%s %s %s",
-		fmtTime(m.pos),
-		bar,
-		fmtTime(m.dur),
-	)
+	return fmt.Sprintf("%s %s %s", fmtTime(m.pos), bar, fmtTime(m.dur))
 }
 
 func (m Model) volumeBar() string {
@@ -308,6 +576,8 @@ func (m Model) volumeBar() string {
 	return styleBarFill.Render(strings.Repeat("█", filled)) +
 		styleBar.Render(strings.Repeat("░", barW-filled))
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func fmtTime(s float64) string {
 	if s < 0 {
@@ -327,4 +597,11 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(runes[:max-3]) + "..."
+}
+
+// songsDir and plsDir are wired from main.go via an exported helper so
+// the model doesn't need to import os itself for the path check.
+func DefaultPlaylistsDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "jammer", "playlists")
 }

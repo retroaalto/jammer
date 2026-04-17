@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jooapa/jammer/jammer-go/internal/audio"
+	"github.com/jooapa/jammer/jammer-go/internal/playlist"
 )
 
 var supportedExts = map[string]bool{
@@ -16,10 +17,29 @@ var supportedExts = map[string]bool{
 	".aiff": true, ".aif": true,
 }
 
-// Song holds metadata about a track.
+// Song holds metadata and playback info for a track.
 type Song struct {
-	Path  string
-	Title string // display name (filename without ext)
+	Path   string // absolute local file path (empty if not downloaded)
+	URL    string // source URL (empty for local-only files)
+	Title  string
+	Author string
+}
+
+// Downloaded reports whether the song has a local file ready to play.
+func (s Song) Downloaded() bool { return s.Path != "" }
+
+// DisplayTitle returns the best available title.
+func (s Song) DisplayTitle() string {
+	if s.Title != "" && s.Author != "" {
+		return s.Author + " - " + s.Title
+	}
+	if s.Title != "" {
+		return s.Title
+	}
+	if s.Path != "" {
+		return strings.TrimSuffix(filepath.Base(s.Path), filepath.Ext(s.Path))
+	}
+	return s.URL
 }
 
 // State is the playback state.
@@ -33,22 +53,23 @@ const (
 
 // Player manages audio playback and the song queue.
 type Player struct {
-	mu            sync.Mutex
-	songs         []Song
-	index         int
-	state         State
-	stream        audio.Stream
-	volume        float32
+	mu     sync.Mutex
+	songs  []Song
+	index  int
+	state  State
+	stream audio.Stream
+	volume float32
+
 	OnTrackChange func(index int)
 	OnStop        func()
 }
 
-// New creates a new Player (BASS must already be loaded and initialised).
+// New creates a new Player. BASS must already be loaded and initialised.
 func New() *Player {
 	return &Player{volume: 0.8}
 }
 
-// LoadDir scans a directory and populates the song list.
+// LoadDir scans a directory for audio files and loads them as the queue.
 func (p *Player) LoadDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -76,7 +97,40 @@ func (p *Player) LoadDir(dir string) error {
 	return nil
 }
 
-// Songs returns a copy of the song list.
+// LoadPlaylist replaces the queue with entries from a playlist.
+func (p *Player) LoadPlaylist(entries []playlist.Entry) {
+	songs := make([]Song, len(entries))
+	for i, e := range entries {
+		songs[i] = Song{
+			Path:   e.Path,
+			URL:    e.URL,
+			Title:  e.Title,
+			Author: e.Author,
+		}
+	}
+	p.mu.Lock()
+	p.songs = songs
+	p.index = 0
+	// stop current stream if any
+	if p.stream != 0 {
+		p.stream.Stop()
+		p.stream.Free()
+		p.stream = 0
+		p.state = StateStopped
+	}
+	p.mu.Unlock()
+}
+
+// UpdateSongPath refreshes the local path of a song after it has been downloaded.
+func (p *Player) UpdateSongPath(index int, path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if index >= 0 && index < len(p.songs) {
+		p.songs[index].Path = path
+	}
+}
+
+// Songs returns a snapshot of the song list.
 func (p *Player) Songs() []Song {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -103,7 +157,6 @@ func (p *Player) State() State {
 func (p *Player) Play() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
 	if p.state == StatePaused && p.stream != 0 {
 		if err := p.stream.Play(false); err != nil {
 			return err
@@ -125,7 +178,7 @@ func (p *Player) PlayIndex(i int) error {
 	return p.openAndPlay(i)
 }
 
-// must be called with lock held.
+// openAndPlay opens and starts playback. Must be called with lock held.
 func (p *Player) openAndPlay(i int) error {
 	if p.stream != 0 {
 		p.stream.Stop()
@@ -134,6 +187,10 @@ func (p *Player) openAndPlay(i int) error {
 	}
 	if len(p.songs) == 0 {
 		return nil
+	}
+	if !p.songs[i].Downloaded() {
+		p.state = StateStopped
+		return nil // song not available locally yet
 	}
 	s, err := audio.OpenFile(p.songs[i].Path)
 	if err != nil {
@@ -146,14 +203,14 @@ func (p *Player) openAndPlay(i int) error {
 	}
 	p.stream = s
 	p.state = StatePlaying
-	idx := i
 	if p.OnTrackChange != nil {
+		idx := i
 		go p.OnTrackChange(idx)
 	}
 	return nil
 }
 
-// Pause toggles pause/play.
+// Pause toggles pause/resume.
 func (p *Player) Pause() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -189,23 +246,46 @@ func (p *Player) Stop() {
 	}
 }
 
-// Next advances to the next track.
+// Next advances to the next downloaded track, wrapping around.
 func (p *Player) Next() error {
 	p.mu.Lock()
-	next := (p.index + 1) % len(p.songs)
+	total := len(p.songs)
+	start := (p.index + 1) % total
 	p.mu.Unlock()
-	return p.PlayIndex(next)
+
+	// Skip songs that are not downloaded.
+	for i := 0; i < total; i++ {
+		idx := (start + i) % total
+		p.mu.Lock()
+		avail := p.songs[idx].Downloaded()
+		p.mu.Unlock()
+		if avail {
+			return p.PlayIndex(idx)
+		}
+	}
+	return nil
 }
 
-// Prev goes back to the previous track.
+// Prev goes to the previous downloaded track.
 func (p *Player) Prev() error {
 	p.mu.Lock()
-	prev := p.index - 1
-	if prev < 0 {
-		prev = len(p.songs) - 1
+	total := len(p.songs)
+	start := p.index - 1
+	if start < 0 {
+		start = total - 1
 	}
 	p.mu.Unlock()
-	return p.PlayIndex(prev)
+
+	for i := 0; i < total; i++ {
+		idx := (start - i + total) % total
+		p.mu.Lock()
+		avail := p.songs[idx].Downloaded()
+		p.mu.Unlock()
+		if avail {
+			return p.PlayIndex(idx)
+		}
+	}
+	return nil
 }
 
 // SeekForward seeks forward by d seconds.
@@ -276,8 +356,7 @@ func (p *Player) WatchEnd() {
 		time.Sleep(500 * time.Millisecond)
 		p.mu.Lock()
 		if p.state == StatePlaying && p.stream != 0 {
-			active := p.stream.IsActive()
-			if active == audio.ActiveStopped {
+			if p.stream.IsActive() == audio.ActiveStopped {
 				p.mu.Unlock()
 				_ = p.Next()
 				continue
