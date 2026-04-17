@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/jooapa/jammer/jammer-go/internal/audio"
+	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
+	"github.com/jooapa/jammer/jammer-go/internal/tags"
 )
 
 var supportedExts = map[string]bool{
@@ -69,6 +71,27 @@ func New() *Player {
 	return &Player{volume: 0.8}
 }
 
+// NewHeadless creates a Player with no audio backend — safe for tests.
+func NewHeadless() *Player {
+	return &Player{volume: 0.8}
+}
+
+// SetSongs replaces the song list without touching audio — for tests.
+func (p *Player) SetSongs(songs []Song) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.songs = make([]Song, len(songs))
+	copy(p.songs, songs)
+	p.index = 0
+}
+
+// SetIndexForTest moves the internal index — for tests only.
+func (p *Player) SetIndexForTest(i int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.index = i
+}
+
 // LoadDir scans a directory for audio files and loads them as the queue.
 func (p *Player) LoadDir(dir string) error {
 	entries, err := os.ReadDir(dir)
@@ -84,11 +107,18 @@ func (p *Player) LoadDir(dir string) error {
 		if !supportedExts[ext] {
 			continue
 		}
-		name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
-		songs = append(songs, Song{
-			Path:  filepath.Join(dir, e.Name()),
-			Title: name,
-		})
+		path := filepath.Join(dir, e.Name())
+		s := Song{Path: path}
+
+		// Try to read embedded tags; fall back to filename as title.
+		if info, err := tags.Read(path); err == nil && info.Title != "" {
+			s.Title = info.Title
+			s.Author = info.Artist
+		} else {
+			s.Title = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		}
+
+		songs = append(songs, s)
 	}
 	p.mu.Lock()
 	p.songs = songs
@@ -107,11 +137,21 @@ func (p *Player) LoadPlaylist(entries []playlist.Entry) {
 			Title:  e.Title,
 			Author: e.Author,
 		}
+		// Enrich from embedded tags for songs already on disk.
+		if songs[i].Path != "" && (songs[i].Title == "" || songs[i].Author == "") {
+			if info, err := tags.Read(songs[i].Path); err == nil && info.Title != "" {
+				if songs[i].Title == "" {
+					songs[i].Title = info.Title
+				}
+				if songs[i].Author == "" {
+					songs[i].Author = info.Artist
+				}
+			}
+		}
 	}
 	p.mu.Lock()
 	p.songs = songs
 	p.index = 0
-	// stop current stream if any
 	if p.stream != 0 {
 		p.stream.Stop()
 		p.stream.Free()
@@ -127,6 +167,20 @@ func (p *Player) UpdateSongPath(index int, path string) {
 	defer p.mu.Unlock()
 	if index >= 0 && index < len(p.songs) {
 		p.songs[index].Path = path
+	}
+}
+
+// UpdateSongTags sets the Title and Artist of a song by index.
+func (p *Player) UpdateSongTags(index int, title, artist string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if index >= 0 && index < len(p.songs) {
+		if title != "" {
+			p.songs[index].Title = title
+		}
+		if artist != "" {
+			p.songs[index].Author = artist
+		}
 	}
 }
 
@@ -186,21 +240,40 @@ func (p *Player) openAndPlay(i int) error {
 		p.stream = 0
 	}
 	if len(p.songs) == 0 {
+		jlog.Info("openAndPlay: no songs in queue")
 		return nil
 	}
 	if !p.songs[i].Downloaded() {
+		jlog.Infof("openAndPlay: index=%d not downloaded yet, stopping", i)
 		p.state = StateStopped
 		return nil // song not available locally yet
 	}
+	jlog.Infof("openAndPlay: opening index=%d path=%q", i, p.songs[i].Path)
 	s, err := audio.OpenFile(p.songs[i].Path)
 	if err != nil {
+		jlog.Errorf("openAndPlay: OpenFile failed index=%d path=%q: %v", i, p.songs[i].Path, err)
 		return err
+	}
+
+	// Enrich metadata from embedded tags if not already set from playlist.
+	if p.songs[i].Title == "" || p.songs[i].Author == "" {
+		if info, terr := tags.Read(p.songs[i].Path); terr == nil && info.Title != "" {
+			if p.songs[i].Title == "" {
+				p.songs[i].Title = info.Title
+			}
+			if p.songs[i].Author == "" {
+				p.songs[i].Author = info.Artist
+			}
+			jlog.Infof("openAndPlay: read tags index=%d title=%q artist=%q", i, info.Title, info.Artist)
+		}
 	}
 	s.SetVolume(p.volume)
 	if err := s.Play(false); err != nil {
+		jlog.Errorf("openAndPlay: Play failed index=%d: %v", i, err)
 		s.Free()
 		return err
 	}
+	jlog.Infof("openAndPlay: playing index=%d title=%q", i, p.songs[i].DisplayTitle())
 	p.stream = s
 	p.state = StatePlaying
 	if p.OnTrackChange != nil {
@@ -246,46 +319,32 @@ func (p *Player) Stop() {
 	}
 }
 
-// Next advances to the next downloaded track, wrapping around.
+// Next advances to the next track and plays it if it is available locally.
+// The index always moves regardless of download status.
 func (p *Player) Next() error {
 	p.mu.Lock()
 	total := len(p.songs)
-	start := (p.index + 1) % total
-	p.mu.Unlock()
-
-	// Skip songs that are not downloaded.
-	for i := 0; i < total; i++ {
-		idx := (start + i) % total
-		p.mu.Lock()
-		avail := p.songs[idx].Downloaded()
+	if total == 0 {
 		p.mu.Unlock()
-		if avail {
-			return p.PlayIndex(idx)
-		}
+		return nil
 	}
-	return nil
+	next := (p.index + 1) % total
+	p.mu.Unlock()
+	return p.PlayIndex(next)
 }
 
-// Prev goes to the previous downloaded track.
+// Prev goes to the previous track and plays it if it is available locally.
+// The index always moves regardless of download status.
 func (p *Player) Prev() error {
 	p.mu.Lock()
 	total := len(p.songs)
-	start := p.index - 1
-	if start < 0 {
-		start = total - 1
-	}
-	p.mu.Unlock()
-
-	for i := 0; i < total; i++ {
-		idx := (start - i + total) % total
-		p.mu.Lock()
-		avail := p.songs[idx].Downloaded()
+	if total == 0 {
 		p.mu.Unlock()
-		if avail {
-			return p.PlayIndex(idx)
-		}
+		return nil
 	}
-	return nil
+	prev := (p.index - 1 + total) % total
+	p.mu.Unlock()
+	return p.PlayIndex(prev)
 }
 
 // SeekForward seeks forward by d seconds.

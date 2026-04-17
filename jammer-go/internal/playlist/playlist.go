@@ -30,15 +30,51 @@ func (e Entry) DisplayTitle() string {
 	return e.URL
 }
 
-// jammerMeta is the JSON blob stored after the ?| delimiter.
-type jammerMeta struct {
-	Title  string `json:"Title"`
-	Author string `json:"Author"`
+// ── JSONL format ──────────────────────────────────────────────────────────────
+//
+// New .jammer format: one JSON object per line.
+//   {"url":"https://...","title":"Track","author":"Artist"}
+//
+// The old format used url?|{"Title":"...","Author":"..."} as a delimiter.
+// Both are detected automatically when loading.
+
+type jsonlEntry struct {
+	URL    string `json:"url"`
+	Title  string `json:"title"`
+	Author string `json:"author"`
+	// Local-only entry (no URL)
+	Path string `json:"path,omitempty"`
+}
+
+// Save writes entries to path in JSONL format, creating or overwriting the file.
+func Save(path string, entries []Entry) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	for _, e := range entries {
+		je := jsonlEntry{
+			URL:    e.URL,
+			Title:  e.Title,
+			Author: e.Author,
+		}
+		if e.URL == "" {
+			je.Path = e.Path
+		}
+		if err := enc.Encode(je); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // LoadJammer parses a .jammer playlist file.
-// Each line is:   url?|{"Title":"...","Author":"..."}
-// or just a bare local path / URL with no metadata.
+// Supports both the new JSONL format and the legacy url?|{...} format.
+// If the file is detected as legacy format it is automatically converted
+// in-place to the new JSONL format.
 func LoadJammer(path, songsDir string) ([]Entry, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -46,10 +82,12 @@ func LoadJammer(path, songsDir string) ([]Entry, error) {
 	}
 	defer f.Close()
 
-	const delim = "?|"
 	var entries []Entry
+	legacy := false
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -57,38 +95,64 @@ func LoadJammer(path, songsDir string) ([]Entry, error) {
 		}
 
 		var e Entry
-		if idx := strings.Index(line, delim); idx >= 0 {
-			rawURL := line[:idx] + "?" // keep the trailing ? — it's part of SC URLs
-			metaJSON := line[idx+len(delim):]
 
-			// Strip the trailing ? that's actually the delimiter artifact
-			// The real URL has no trailing ? — strip it.
-			e.URL = strings.TrimSuffix(rawURL, "?")
-
-			if metaJSON != "" && metaJSON != "{}" {
-				var m jammerMeta
-				if err := json.Unmarshal([]byte(metaJSON), &m); err == nil {
-					e.Title = m.Title
-					e.Author = m.Author
+		if strings.HasPrefix(line, "{") {
+			// ── New JSONL format ──────────────────────────────────────────
+			var je jsonlEntry
+			if err := json.Unmarshal([]byte(line), &je); err == nil {
+				e.URL = je.URL
+				e.Title = je.Title
+				e.Author = je.Author
+				if je.Path != "" {
+					e.Path = je.Path
 				}
+			} else {
+				continue
 			}
 		} else {
-			// bare path or URL
-			if isURL(line) {
-				e.URL = line
+			// ── Legacy ?| format ──────────────────────────────────────────
+			legacy = true
+			const delim = "?|"
+			if idx := strings.Index(line, delim); idx >= 0 {
+				rawURL := line[:idx]
+				metaJSON := line[idx+len(delim):]
+				e.URL = strings.TrimSuffix(rawURL, "?")
+
+				if metaJSON != "" && metaJSON != "{}" {
+					var old struct {
+						Title  string `json:"Title"`
+						Author string `json:"Author"`
+					}
+					if err := json.Unmarshal([]byte(metaJSON), &old); err == nil {
+						e.Title = old.Title
+						e.Author = old.Author
+					}
+				}
 			} else {
-				e.Path = line
+				if isURL(line) {
+					e.URL = line
+				} else {
+					e.Path = line
+				}
 			}
 		}
 
-		// Resolve local file if we have a URL
 		if e.URL != "" && e.Path == "" {
 			e.Path = resolveLocalPath(e.URL, songsDir)
 		}
 
 		entries = append(entries, e)
 	}
-	return entries, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	// Auto-convert legacy file to JSONL in-place.
+	if legacy {
+		_ = Save(path, entries) // best-effort; parsed entries are returned regardless
+	}
+
+	return entries, nil
 }
 
 // LoadM3U parses a .m3u or .m3u8 playlist file.
@@ -125,7 +189,6 @@ func LoadM3U(path, songsDir string) ([]Entry, error) {
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		// This is the actual URI
 		if isURL(line) {
 			pending.URL = line
 			pending.Path = resolveLocalPath(line, songsDir)
@@ -145,9 +208,6 @@ func isURL(s string) bool {
 
 // resolveLocalPath converts a URL to the expected local filename, following the
 // same logic as the .NET FormatUrlForFilename.
-//
-//	https://soundcloud.com/author/track?anything  → songsDir/soundcloud.com author track.mp3
-//	https://www.youtube.com/watch?v=xxx           → songsDir/www.youtube.com watch?v=xxx.ogg
 func resolveLocalPath(url, songsDir string) string {
 	name := urlToBasename(url)
 	candidates := []string{
@@ -155,7 +215,6 @@ func resolveLocalPath(url, songsDir string) string {
 		filepath.Join(songsDir, name+".ogg"),
 		filepath.Join(songsDir, name+".wav"),
 		filepath.Join(songsDir, name+".flac"),
-		// check without extension (bare name match)
 		filepath.Join(songsDir, name),
 	}
 	for _, c := range candidates {
@@ -166,11 +225,10 @@ func resolveLocalPath(url, songsDir string) string {
 	return ""
 }
 
-// urlToBasename replicates the .NET FormatUrlForFilename logic (isCheck=true).
+// urlToBasename replicates the .NET FormatUrlForFilename logic.
 func urlToBasename(url string) string {
 	u := url
 
-	// SoundCloud: strip everything after ?
 	if strings.Contains(u, "soundcloud.com") {
 		if idx := strings.Index(u, "?"); idx > 0 {
 			u = u[:idx]
@@ -181,7 +239,6 @@ func urlToBasename(url string) string {
 		return u
 	}
 
-	// YouTube: strip after &
 	if strings.Contains(u, "youtube.com") || strings.Contains(u, "youtu.be") {
 		if idx := strings.Index(u, "&"); idx > 0 {
 			u = u[:idx]
@@ -192,7 +249,6 @@ func urlToBasename(url string) string {
 		return u
 	}
 
-	// Generic
 	u = strings.TrimPrefix(u, "https://")
 	u = strings.TrimPrefix(u, "http://")
 	u = strings.ReplaceAll(u, "/", " ")
@@ -203,7 +259,7 @@ func urlToBasename(url string) string {
 // URLToExpectedBasename is exported for the downloader to know the target filename.
 func URLToExpectedBasename(url string) string { return urlToBasename(url) }
 
-// List scans dir for playlist files and returns their names (without extension).
+// List scans dir for playlist files and returns their filenames.
 func List(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -228,7 +284,7 @@ func Load(path, songsDir string) ([]Entry, error) {
 	switch ext {
 	case ".m3u", ".m3u8":
 		return LoadM3U(path, songsDir)
-	default: // .jammer, .playlist
+	default: // .jammer, .playlist, etc.
 		return LoadJammer(path, songsDir)
 	}
 }

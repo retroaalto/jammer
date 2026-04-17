@@ -2,15 +2,19 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
+	"github.com/jooapa/jammer/jammer-go/internal/scid"
 	yt "github.com/kkdai/youtube/v2"
 )
 
@@ -24,16 +28,240 @@ type Progress struct {
 
 // Download downloads the song at url into songsDir and returns the local path.
 // progress receives updates; it is closed when the download finishes.
-func Download(ctx context.Context, url, songsDir string, progress chan<- Progress) (string, error) {
+func Download(ctx context.Context, rawURL, songsDir string, progress chan<- Progress) (string, error) {
 	defer close(progress)
+	jlog.Infof("downloader: start url=%q", rawURL)
 
-	if isSoundCloud(url) || isYouTubePlaylist(url) {
-		return downloadViaYtdlp(ctx, url, songsDir, progress)
+	if isSoundCloud(rawURL) {
+		return downloadSoundCloud(ctx, rawURL, songsDir, progress)
 	}
-	if isYouTube(url) {
-		return downloadYouTube(ctx, url, songsDir, progress)
+	if isYouTubePlaylist(rawURL) {
+		return downloadViaYtdlp(ctx, rawURL, songsDir, progress)
 	}
-	return downloadHTTP(ctx, url, songsDir, progress)
+	if isYouTube(rawURL) {
+		return downloadYouTube(ctx, rawURL, songsDir, progress)
+	}
+	return downloadHTTP(ctx, rawURL, songsDir, progress)
+}
+
+// ── SoundCloud ────────────────────────────────────────────────────────────────
+
+// SC API v2 types (minimal)
+type scTrack struct {
+	Media struct {
+		Transcodings []struct {
+			URL    string `json:"url"`
+			Format struct {
+				Protocol string `json:"protocol"`
+				MimeType string `json:"mime_type"`
+			} `json:"format"`
+			Quality string `json:"quality"`
+		} `json:"transcodings"`
+	} `json:"media"`
+	Title string `json:"title"`
+}
+
+type scStreamResponse struct {
+	URL string `json:"url"`
+}
+
+func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress chan<- Progress) (string, error) {
+	send := func(frac float64, msg string) {
+		select {
+		case progress <- Progress{Frac: frac, Message: msg}:
+		default:
+		}
+	}
+
+	send(0, "fetching SC client_id...")
+	clientID, err := scid.Get(ctx)
+	if err != nil {
+		jlog.Errorf("sc: client_id fetch failed: %v — falling back to yt-dlp", err)
+		// client_id fetch failed — fall back to yt-dlp
+		send(0.05, "client_id unavailable, trying yt-dlp...")
+		return downloadViaYtdlp(ctx, trackURL, songsDir, progress)
+	}
+	jlog.Infof("sc: got client_id (len=%d)", len(clientID))
+
+	send(0.1, "resolving track...")
+	track, err := scResolveTrack(ctx, trackURL, clientID)
+	if err != nil {
+		jlog.Errorf("sc: resolve failed: %v — invalidating client_id and retrying", err)
+		// Possibly stale client_id — invalidate and retry once
+		scid.Invalidate()
+		send(0.1, "retrying with fresh client_id...")
+		clientID, err = scid.Get(ctx)
+		if err != nil {
+			send(0.1, "client_id unavailable, trying yt-dlp...")
+			return downloadViaYtdlp(ctx, trackURL, songsDir, progress)
+		}
+		track, err = scResolveTrack(ctx, trackURL, clientID)
+		if err != nil {
+			send(0.1, "SC API failed, trying yt-dlp...")
+			return downloadViaYtdlp(ctx, trackURL, songsDir, progress)
+		}
+	}
+
+	// Pick best transcoding: prefer progressive mp3
+	var chosen *struct {
+		URL    string
+		Format struct {
+			Protocol string `json:"protocol"`
+			MimeType string `json:"mime_type"`
+		}
+		Quality string
+	}
+	for i := range track.Media.Transcodings {
+		t := &track.Media.Transcodings[i]
+		if t.Format.Protocol == "progressive" {
+			if chosen == nil || strings.Contains(t.Format.MimeType, "mpeg") {
+				chosen = &struct {
+					URL    string
+					Format struct {
+						Protocol string `json:"protocol"`
+						MimeType string `json:"mime_type"`
+					}
+					Quality string
+				}{URL: t.URL, Format: t.Format, Quality: t.Quality}
+			}
+		}
+	}
+	if chosen == nil && len(track.Media.Transcodings) > 0 {
+		t := &track.Media.Transcodings[0]
+		chosen = &struct {
+			URL    string
+			Format struct {
+				Protocol string `json:"protocol"`
+				MimeType string `json:"mime_type"`
+			}
+			Quality string
+		}{URL: t.URL, Format: t.Format, Quality: t.Quality}
+	}
+	if chosen == nil {
+		send(0.2, "no transcodings found, trying yt-dlp...")
+		return downloadViaYtdlp(ctx, trackURL, songsDir, progress)
+	}
+
+	send(0.2, "fetching stream URL...")
+	streamURL, err := scGetStreamURL(ctx, chosen.URL, clientID)
+	if err != nil {
+		jlog.Errorf("sc: stream URL fetch failed: %v — falling back to yt-dlp", err)
+		send(0.2, "stream URL fetch failed, trying yt-dlp...")
+		return downloadViaYtdlp(ctx, trackURL, songsDir, progress)
+	}
+	jlog.Infof("sc: stream URL obtained")
+
+	// Determine output extension
+	ext := ".mp3"
+	if strings.Contains(chosen.Format.MimeType, "ogg") || strings.Contains(chosen.Format.MimeType, "opus") {
+		ext = ".ogg"
+	}
+
+	basename := playlist.URLToExpectedBasename(trackURL)
+	tmpPath := filepath.Join(songsDir, basename+ext+".tmp")
+	finalPath := filepath.Join(songsDir, basename+ext)
+
+	send(0.25, "downloading...")
+	req, err := http.NewRequestWithContext(ctx, "GET", streamURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("sc download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("sc download: HTTP %d", resp.StatusCode)
+	}
+
+	tmpF, err := os.Create(tmpPath)
+	if err != nil {
+		return "", err
+	}
+
+	total := resp.ContentLength
+	written := int64(0)
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := tmpF.Write(buf[:n]); werr != nil {
+				tmpF.Close()
+				os.Remove(tmpPath)
+				return "", werr
+			}
+			written += int64(n)
+			if total > 0 {
+				send(0.25+0.7*float64(written)/float64(total), "downloading...")
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			tmpF.Close()
+			os.Remove(tmpPath)
+			return "", rerr
+		}
+	}
+	tmpF.Close()
+
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+	send(1.0, "done")
+	return finalPath, nil
+}
+
+func scResolveTrack(ctx context.Context, trackURL, clientID string) (*scTrack, error) {
+	apiURL := "https://api-v2.soundcloud.com/resolve?url=" + url.QueryEscape(trackURL) + "&client_id=" + clientID
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("SC resolve: HTTP %d", resp.StatusCode)
+	}
+	var track scTrack
+	if err := json.NewDecoder(resp.Body).Decode(&track); err != nil {
+		return nil, err
+	}
+	return &track, nil
+}
+
+func scGetStreamURL(ctx context.Context, transcodingURL, clientID string) (string, error) {
+	fullURL := transcodingURL + "?client_id=" + clientID
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("SC stream URL: HTTP %d", resp.StatusCode)
+	}
+	var sr scStreamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return "", err
+	}
+	if sr.URL == "" {
+		return "", fmt.Errorf("SC stream URL: empty response")
+	}
+	return sr.URL, nil
 }
 
 // ── YouTube ───────────────────────────────────────────────────────────────────
@@ -308,14 +536,18 @@ func extFromContentType(ct string) string {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-func isYouTube(url string) bool {
+func IsYouTube(url string) bool {
 	return strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
 }
 
-func isYouTubePlaylist(url string) bool {
-	return isYouTube(url) && strings.Contains(url, "list=")
+func IsYouTubePlaylist(url string) bool {
+	return IsYouTube(url) && strings.Contains(url, "list=")
 }
 
-func isSoundCloud(url string) bool {
+func IsSoundCloud(url string) bool {
 	return strings.Contains(url, "soundcloud.com")
 }
+
+func isYouTube(url string) bool         { return IsYouTube(url) }
+func isYouTubePlaylist(url string) bool { return IsYouTubePlaylist(url) }
+func isSoundCloud(url string) bool      { return IsSoundCloud(url) }

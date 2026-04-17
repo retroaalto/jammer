@@ -12,8 +12,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jooapa/jammer/jammer-go/internal/downloader"
+	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
+	"github.com/jooapa/jammer/jammer-go/internal/tags"
 )
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -21,8 +23,10 @@ import (
 type tickMsg time.Time
 
 type downloadProgressMsg struct {
-	index int
-	prog  downloader.Progress
+	index      int
+	prog       downloader.Progress
+	progressCh <-chan downloader.Progress
+	doneCh     <-chan downloadDoneMsg
 }
 
 type downloadDoneMsg struct {
@@ -112,12 +116,14 @@ type Model struct {
 	height int
 
 	// songs view
-	songs    []player.Song
-	scursor  int
-	soffset  int
-	playing  int
-	pos, dur float64
-	dlStates map[int]*dlState
+	songs       []player.Song
+	scursor     int
+	soffset     int
+	playing     int
+	prevPlaying int // track changes detected in tickMsg
+	pos, dur    float64
+	dlStates    map[int]*dlState
+	plsFile     string // absolute path of currently loaded playlist (empty = songs dir)
 
 	// playlists view
 	playlists []string // filenames (basename only) in plsDir
@@ -166,8 +172,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		pos, dur := m.p.Progress()
 		m.pos = pos
 		m.dur = dur
-		m.playing = m.p.Index()
+		newIdx := m.p.Index()
 		m.songs = m.p.Songs()
+		if newIdx != m.prevPlaying {
+			// Track changed (auto-advance from WatchEnd or similar).
+			jlog.Infof("tick: track changed %d → %d", m.prevPlaying, newIdx)
+			m.prevPlaying = newIdx
+			m.playing = newIdx
+			return m, tea.Batch(tick(), m.downloadIfNeeded(newIdx))
+		}
+		m.playing = newIdx
 		return m, tick()
 
 	case downloadProgressMsg:
@@ -178,6 +192,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.prog.Done {
 			ds.active = false
 		}
+		// Schedule the next read from the same channels.
+		return m, readNextDownloadEvent(msg.index, msg.progressCh, msg.doneCh)
 
 	case downloadDoneMsg:
 		ds := m.getOrCreateDlState(msg.index)
@@ -185,11 +201,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			ds.err = msg.err
 			ds.frac = 0
+			jlog.Errorf("download failed index=%d: %v", msg.index, msg.err)
 		} else {
 			ds.frac = 1
 			ds.err = nil
+			jlog.Infof("download done index=%d path=%q", msg.index, msg.path)
 			m.p.UpdateSongPath(msg.index, msg.path)
+
+			// Read ID3 tags from the freshly downloaded file and push them
+			// into the player so the UI shows proper title/artist immediately.
+			if info, err := tags.Read(msg.path); err == nil && info.Title != "" {
+				m.p.UpdateSongTags(msg.index, info.Title, info.Artist)
+				jlog.Infof("download tags index=%d title=%q artist=%q", msg.index, info.Title, info.Artist)
+			}
+
 			m.songs = m.p.Songs()
+
+			// Persist enriched metadata back to the playlist file.
+			m.saveCurrentPlaylist()
+
+			// Auto-play if this is the currently selected track and player is stopped.
+			if msg.index == m.playing && m.p.State() == player.StateStopped {
+				jlog.Infof("auto-play after download index=%d", msg.index)
+				if err := m.p.PlayIndex(msg.index); err != nil {
+					jlog.Errorf("auto-play failed index=%d: %v", msg.index, err)
+				}
+			}
 		}
 
 	case tea.KeyPressMsg:
@@ -200,6 +237,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	viewName := "songs"
+	if m.view == viewPlaylists {
+		viewName = "playlists"
+	}
+	jlog.Key(msg.String(), viewName)
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		m.p.Stop()
@@ -234,36 +277,64 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.scursor++
 			m.clampSongScroll()
 		}
-	case "enter", " ":
+	case "enter":
 		if m.scursor == m.playing && m.p.State() != player.StateStopped {
-			_ = m.p.Pause()
+			jlog.Infof("ui: pause song index=%d", m.scursor)
+			if err := m.p.Pause(); err != nil {
+				jlog.Errorf("ui: pause failed: %v", err)
+			}
 		} else {
-			_ = m.p.PlayIndex(m.scursor)
+			jlog.Infof("ui: play song index=%d title=%q", m.scursor, m.songs[m.scursor].DisplayTitle())
+			if err := m.p.PlayIndex(m.scursor); err != nil {
+				jlog.Errorf("ui: PlayIndex failed index=%d: %v", m.scursor, err)
+			}
 			m.playing = m.scursor
+			m.prevPlaying = m.scursor
+			// Download if the song isn't local yet.
+			return m, m.downloadIfNeeded(m.scursor)
 		}
-	case "p":
-		_ = m.p.Pause()
+	case " ":
+		jlog.Infof("ui: toggle pause index=%d", m.playing)
+		if err := m.p.Pause(); err != nil {
+			jlog.Errorf("ui: pause toggle failed: %v", err)
+		}
 	case "s":
+		jlog.Infof("ui: stop")
 		m.p.Stop()
 	case "n":
-		_ = m.p.Next()
+		if err := m.p.Next(); err != nil {
+			jlog.Errorf("ui: next failed: %v", err)
+		}
 		m.playing = m.p.Index()
+		m.prevPlaying = m.playing
 		m.scursor = m.playing
 		m.clampSongScroll()
+		jlog.Infof("ui: next → index=%d", m.playing)
+		return m, m.downloadIfNeeded(m.playing)
 	case "b":
-		_ = m.p.Prev()
+		if err := m.p.Prev(); err != nil {
+			jlog.Errorf("ui: prev failed: %v", err)
+		}
 		m.playing = m.p.Index()
+		m.prevPlaying = m.playing
 		m.scursor = m.playing
 		m.clampSongScroll()
+		jlog.Infof("ui: prev → index=%d", m.playing)
+		return m, m.downloadIfNeeded(m.playing)
 	case "right", "l":
 		m.p.SeekForward(10)
+		jlog.Info("ui: seek +10s")
 	case "left", "h":
 		m.p.SeekBackward(10)
+		jlog.Info("ui: seek -10s")
 	case "+", "=":
 		m.p.SetVolume(m.p.Volume() + 0.05)
+		jlog.Infof("ui: volume up → %.0f%%", float64(m.p.Volume())*100)
 	case "-":
 		m.p.SetVolume(m.p.Volume() - 0.05)
+		jlog.Infof("ui: volume down → %.0f%%", float64(m.p.Volume())*100)
 	case "d":
+		jlog.Infof("ui: download requested index=%d url=%q", m.scursor, m.songs[m.scursor].URL)
 		return m, m.startDownload(m.scursor)
 	}
 	return m, nil
@@ -283,6 +354,7 @@ func (m Model) handlePlaylistKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter", " ":
 		if m.pcursor >= 0 && m.pcursor < len(m.playlists) {
+			jlog.Infof("ui: loading playlist %q", m.playlists[m.pcursor])
 			m.loadPlaylist(m.playlists[m.pcursor])
 			m.view = viewSongs
 			m.scursor = 0
@@ -301,6 +373,52 @@ func (m *Model) loadPlaylist(filename string) {
 	m.p.LoadPlaylist(entries)
 	m.songs = m.p.Songs()
 	m.dlStates = make(map[int]*dlState)
+	m.plsFile = path
+
+	// Write back enriched metadata (tags filled in for downloaded songs).
+	m.saveCurrentPlaylist()
+}
+
+// saveCurrentPlaylist persists the current song list (with enriched metadata)
+// back to the playlist file. No-op if no playlist is loaded.
+func (m *Model) saveCurrentPlaylist() {
+	if m.plsFile == "" {
+		return
+	}
+	songs := m.p.Songs()
+	entries := make([]playlist.Entry, len(songs))
+	for i, s := range songs {
+		entries[i] = playlist.Entry{
+			URL:    s.URL,
+			Title:  s.Title,
+			Author: s.Author,
+		}
+		// Don't persist the resolved local path — it may differ between machines.
+	}
+	if err := playlist.Save(m.plsFile, entries); err != nil {
+		jlog.Errorf("saveCurrentPlaylist: %v", err)
+	} else {
+		jlog.Infof("saveCurrentPlaylist: wrote %d entries to %q", len(entries), m.plsFile)
+	}
+}
+
+// ── On-demand download ────────────────────────────────────────────────────────
+
+// downloadIfNeeded starts a download for song i if it has a URL and is not yet
+// local. Returns nil if nothing needs to be done.
+func (m Model) downloadIfNeeded(i int) tea.Cmd {
+	if i < 0 || i >= len(m.songs) {
+		return nil
+	}
+	s := m.songs[i]
+	if s.Downloaded() || s.URL == "" {
+		return nil
+	}
+	if ds := m.dlStates[i]; ds != nil && (ds.active || ds.frac >= 1) {
+		return nil
+	}
+	jlog.Infof("auto-download: triggering index=%d url=%q", i, s.URL)
+	return m.startDownload(i)
 }
 
 // startDownload kicks off a download for song at index i.
@@ -320,24 +438,38 @@ func (m Model) startDownload(i int) tea.Cmd {
 	ds.frac = 0
 	ds.err = nil
 
-	progressCh := make(chan downloader.Progress, 20)
+	progressCh := make(chan downloader.Progress, 32)
+	doneCh := make(chan downloadDoneMsg, 1)
 
-	// Goroutine: run download and send messages back to the model.
+	// Goroutine: run the download; result goes to doneCh.
+	go func() {
+		jlog.Infof("download start index=%d url=%q", i, song.URL)
+		path, err := downloader.Download(context.Background(), song.URL, m.songsDir, progressCh)
+		doneCh <- downloadDoneMsg{index: i, path: path, err: err}
+	}()
+
+	// Return a streaming Cmd that reads one event (progress or done) and
+	// returns it as a tea.Msg. Update will schedule the next read.
+	return readNextDownloadEvent(i, progressCh, doneCh)
+}
+
+// readNextDownloadEvent returns a Cmd that blocks until either a progress
+// update or the final done message arrives, then surfaces it as a tea.Msg.
+func readNextDownloadEvent(i int, progressCh <-chan downloader.Progress, doneCh <-chan downloadDoneMsg) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
-		// Fan out progress updates as tea commands
-		go func() {
-			for p := range progressCh {
-				// We can't send directly from a goroutine; we use a batch
-				// approach by letting the progress channel drain and sending
-				// a final done message. For richer live updates, we'd use
-				// tea.Program.Send — but for simplicity we just report done.
-				_ = p
+		select {
+		case p, ok := <-progressCh:
+			if !ok {
+				// channel closed — wait for done
+				return <-doneCh
 			}
-		}()
-
-		path, err := downloader.Download(ctx, song.URL, m.songsDir, progressCh)
-		return downloadDoneMsg{index: i, path: path, err: err}
+			if p.Done {
+				return <-doneCh
+			}
+			return downloadProgressMsg{index: i, prog: p, progressCh: progressCh, doneCh: doneCh}
+		case d := <-doneCh:
+			return d
+		}
 	}
 }
 
@@ -510,7 +642,7 @@ func (m Model) renderSongs() string {
 	vol := int(math.Round(float64(m.p.Volume()) * 100))
 	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s", vol, m.volumeBar())) + "\n\n")
 
-	b.WriteString(styleHelp.Render(" enter: play  p: pause  s: stop  n: next  b: prev  d: download") + "\n")
+	b.WriteString(styleHelp.Render(" enter: play  space/p: pause  s: stop  n: next  b: prev  d: download") + "\n")
 	b.WriteString(styleHelp.Render(" ←/→: seek 10s  +/-: volume  tab: playlists  q: quit") + "\n")
 	return b.String()
 }
