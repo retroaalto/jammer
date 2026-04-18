@@ -20,6 +20,7 @@ import (
 type settings struct {
 	BackEndType int `json:"backEndType"`
 	SeekStep    int `json:"seekStep"` // seconds per seek keypress; 0 or missing → default 2
+	LoopType    int `json:"LoopType"` // 0=off, 1=all, 2=one
 }
 
 const defaultSeekStep = 2
@@ -133,6 +134,7 @@ func main() {
 	}
 
 	p := player.New(backend)
+	p.SetLoopMode(player.LoopMode(cfg.LoopType))
 
 	resolvedPlaylist := ""
 	if playlistFlag != "" {

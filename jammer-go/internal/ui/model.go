@@ -133,6 +133,11 @@ type Model struct {
 	dlStates    map[int]*dlState
 	plsFile     string // absolute path of currently loaded playlist (empty = songs dir)
 
+	// filter
+	filter       string // current filter text (empty = no filter)
+	filtering    bool   // true while the user is typing a filter
+	filteredIdxs []int  // indices into songs that match the filter (nil = no filter active)
+
 	// visualizer
 	vizBars    []float64 // current smoothed bar heights (0.0–1.0)
 	vizTargets []float64 // FFT target heights bars animate toward
@@ -455,6 +460,11 @@ func (m Model) handleConfirmConvertKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 }
 
 func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// While filter input is active, route most keys into the filter.
+	if m.filtering {
+		return m.handleFilterKey(msg)
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if m.scursor > 0 {
@@ -462,13 +472,17 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.clampSongScroll()
 		}
 	case "down", "j":
-		if m.scursor < len(m.songs)-1 {
+		if m.scursor < m.filterLen()-1 {
 			m.scursor++
 			m.clampSongScroll()
 		}
 	case "space", "enter":
-		if m.scursor == m.playing && m.p.State() != player.StateStopped {
-			jlog.Infof("ui: pause song index=%d", m.scursor)
+		if m.scursor >= m.filterLen() {
+			break
+		}
+		_, realIdx := m.filterSong(m.scursor)
+		if realIdx == m.playing && m.p.State() != player.StateStopped {
+			jlog.Infof("ui: pause song index=%d", realIdx)
 			if err := m.p.Pause(); err != nil {
 				jlog.Errorf("ui: pause failed: %v", err)
 			}
@@ -477,14 +491,14 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, m.startViz(0)
 			}
 		} else {
-			jlog.Infof("ui: play song index=%d title=%q", m.scursor, m.songs[m.scursor].DisplayTitle())
-			if err := m.p.PlayIndex(m.scursor); err != nil {
-				jlog.Errorf("ui: PlayIndex failed index=%d: %v", m.scursor, err)
+			jlog.Infof("ui: play song index=%d title=%q", realIdx, m.songs[realIdx].DisplayTitle())
+			if err := m.p.PlayIndex(realIdx); err != nil {
+				jlog.Errorf("ui: PlayIndex failed index=%d: %v", realIdx, err)
 			}
-			m.playing = m.scursor
-			m.prevPlaying = m.scursor
+			m.playing = realIdx
+			m.prevPlaying = realIdx
 			// Download if the song isn't local yet.
-			return m, tea.Batch(m.downloadIfNeeded(m.scursor), m.startViz(0))
+			return m, tea.Batch(m.downloadIfNeeded(realIdx), m.startViz(0))
 		}
 	case "s":
 		jlog.Infof("ui: stop")
@@ -529,6 +543,10 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "-":
 		m.p.SetVolume(m.p.Volume() - 0.05)
 		jlog.Infof("ui: volume down → %.0f%%", float64(m.p.Volume())*100)
+	case "L":
+		next := (m.p.GetLoopMode() + 1) % 3
+		m.p.SetLoopMode(next)
+		jlog.Infof("ui: loop mode → %d", next)
 	case "r":
 		if len(m.songs) == 0 {
 			break
@@ -544,12 +562,59 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.clampSongScroll()
 		return m, tea.Batch(m.downloadIfNeeded(idx), m.startViz(0))
 	case "d":
-		jlog.Infof("ui: download requested index=%d url=%q", m.scursor, m.songs[m.scursor].URL)
-		return m, m.startDownload(m.scursor)
+		_, realIdx := m.filterSong(m.scursor)
+		jlog.Infof("ui: download requested index=%d url=%q", realIdx, m.songs[realIdx].URL)
+		return m, m.startDownload(realIdx)
+	case "/":
+		m.filtering = true
+		if m.filteredIdxs == nil {
+			m.filteredIdxs = make([]int, 0)
+		}
+		return m, nil
+	case "escape":
+		if m.filter != "" || m.filteredIdxs != nil {
+			m.filter = ""
+			m.filteredIdxs = nil
+			m.scursor = 0
+			m.soffset = 0
+		}
 	case "delete":
-		return m.removeSong(m.scursor, false), nil
+		_, realIdx := m.filterSong(m.scursor)
+		return m.removeSong(realIdx, false), nil
 	case "shift+delete":
-		return m.removeSong(m.scursor, true), nil
+		_, realIdx := m.filterSong(m.scursor)
+		return m.removeSong(realIdx, true), nil
+	}
+	return m, nil
+}
+
+func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		m.filtering = false
+	case "escape":
+		m.filtering = false
+		m.filter = ""
+		m.filteredIdxs = nil
+		m.scursor = 0
+		m.soffset = 0
+	case "backspace":
+		if len(m.filter) > 0 {
+			runes := []rune(m.filter)
+			m.filter = string(runes[:len(runes)-1])
+			m.rebuildFilter()
+			m.scursor = 0
+			m.soffset = 0
+		}
+	default:
+		// Accept printable single characters.
+		r := []rune(msg.String())
+		if len(r) == 1 && r[0] >= 32 {
+			m.filter += string(r)
+			m.rebuildFilter()
+			m.scursor = 0
+			m.soffset = 0
+		}
 	}
 	return m, nil
 }
@@ -601,6 +666,9 @@ func (m *Model) applyPlaylist(path string, entries []playlist.Entry) {
 	m.songs = m.p.Songs()
 	m.dlStates = make(map[int]*dlState)
 	m.plsFile = path
+	m.filter = ""
+	m.filteredIdxs = nil
+	m.filtering = false
 
 	// Write back enriched metadata (tags filled in for downloaded songs).
 	m.saveCurrentPlaylist()
@@ -740,6 +808,40 @@ func (m Model) getOrCreateDlState(i int) *dlState {
 	return m.dlStates[i]
 }
 
+// ── Filter helpers ────────────────────────────────────────────────────────────
+
+// rebuildFilter recomputes filteredIdxs from the current filter string.
+func (m *Model) rebuildFilter() {
+	if m.filter == "" {
+		m.filteredIdxs = nil
+		return
+	}
+	lower := strings.ToLower(m.filter)
+	m.filteredIdxs = m.filteredIdxs[:0]
+	for i, s := range m.songs {
+		if strings.Contains(strings.ToLower(s.DisplayTitle()), lower) {
+			m.filteredIdxs = append(m.filteredIdxs, i)
+		}
+	}
+}
+
+// filterLen returns the number of visible songs (filtered or total).
+func (m Model) filterLen() int {
+	if m.filteredIdxs != nil {
+		return len(m.filteredIdxs)
+	}
+	return len(m.songs)
+}
+
+// filterSong returns the song at visible position i (filtered or direct).
+func (m Model) filterSong(i int) (player.Song, int) {
+	if m.filteredIdxs != nil {
+		idx := m.filteredIdxs[i]
+		return m.songs[idx], idx
+	}
+	return m.songs[i], i
+}
+
 // ── Scroll helpers ────────────────────────────────────────────────────────────
 
 func (m *Model) clampSongScroll() {
@@ -764,6 +866,9 @@ func (m *Model) clampPLScroll() {
 
 func (m Model) songListHeight() int {
 	reserved := 14
+	if m.filter != "" || m.filtering {
+		reserved++ // filter prompt line
+	}
 	h := m.height - reserved
 	if h < 4 {
 		h = 4
@@ -818,19 +923,28 @@ func (m Model) View() tea.View {
 func (m Model) renderSongs() string {
 	var b strings.Builder
 
-	lh := m.songListHeight()
-	end := m.soffset + lh
-	if end > len(m.songs) {
-		end = len(m.songs)
+	// Filter prompt (shown above the list when filtering or a filter is active).
+	if m.filtering {
+		cursor := styleBarFill.Render("█")
+		b.WriteString(styleHelp.Render(" / ") + m.filter + cursor + "\n")
+	} else if m.filter != "" {
+		b.WriteString(styleHelp.Render(fmt.Sprintf(" / %s  (esc to clear)", m.filter)) + "\n")
 	}
 
-	for i := m.soffset; i < end; i++ {
-		song := m.songs[i]
+	total := m.filterLen()
+	lh := m.songListHeight()
+	end := m.soffset + lh
+	if end > total {
+		end = total
+	}
+
+	for vi := m.soffset; vi < end; vi++ {
+		song, realIdx := m.filterSong(vi)
 		title := truncate(song.DisplayTitle(), m.width-12)
 
 		// Left status prefix
 		prefix := "  "
-		if i == m.playing {
+		if realIdx == m.playing {
 			switch m.p.State() {
 			case player.StatePlaying:
 				prefix = "> "
@@ -843,7 +957,7 @@ func (m Model) renderSongs() string {
 
 		// Right download status
 		suffix := ""
-		if ds, ok := m.dlStates[i]; ok && ds != nil {
+		if ds, ok := m.dlStates[realIdx]; ok && ds != nil {
 			switch {
 			case ds.active:
 				pct := int(ds.frac * 100)
@@ -861,17 +975,17 @@ func (m Model) renderSongs() string {
 
 		var rendered string
 		switch {
-		case !song.Downloaded() && (m.dlStates[i] == nil || !m.dlStates[i].active):
-			if i == m.scursor {
+		case !song.Downloaded() && (m.dlStates[realIdx] == nil || !m.dlStates[realIdx].active):
+			if vi == m.scursor {
 				rendered = styleSelected.Render(line)
 			} else {
 				rendered = styleNotDL.Render(line)
 			}
-		case i == m.scursor && i == m.playing:
+		case vi == m.scursor && realIdx == m.playing:
 			rendered = styleSelected.Render(line)
-		case i == m.scursor:
+		case vi == m.scursor:
 			rendered = styleSelected.Render(line)
-		case i == m.playing:
+		case realIdx == m.playing:
 			rendered = stylePlaying.Render(line)
 		default:
 			rendered = styleNormal.Render(line)
@@ -879,8 +993,8 @@ func (m Model) renderSongs() string {
 		b.WriteString(rendered + suffix + "\n")
 	}
 
-	if len(m.songs) > lh {
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  %d-%d / %d", m.soffset+1, end, len(m.songs))))
+	if total > lh {
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  %d-%d / %d", m.soffset+1, end, total)))
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
@@ -902,10 +1016,12 @@ func (m Model) renderSongs() string {
 	b.WriteString(styleTitle.Render(fmt.Sprintf(" %s  %s", icon, nowTitle)) + "\n")
 	b.WriteString(" " + m.progressBar() + "\n")
 	vol := int(math.Round(float64(m.p.Volume()) * 100))
-	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s", vol, m.volumeBar())) + "\n\n")
+	loopLabels := [3]string{"loop:off", "loop:all", "loop:one"}
+	loopLabel := loopLabels[int(m.p.GetLoopMode())%3]
+	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s   %s", vol, m.volumeBar(), loopLabel)) + "\n\n")
 
 	b.WriteString(styleHelp.Render(" space/enter: play/pause  s: stop  n: next  p: prev  r: random  d: download") + "\n")
-	b.WriteString(styleHelp.Render(fmt.Sprintf(" ←/→: seek %ds  +/-: vol  del: remove  S+del: +file  tab: playlists  q: quit", m.seekStep)) + "\n")
+	b.WriteString(styleHelp.Render(fmt.Sprintf(" /: filter  ←/→: seek %ds  +/-: vol  L: loop  del: remove  S+del: +file  tab: playlists  q: quit", m.seekStep)) + "\n")
 	return b.String()
 }
 

@@ -53,15 +53,25 @@ const (
 	StatePaused
 )
 
+// LoopMode controls what happens when a track ends.
+type LoopMode int
+
+const (
+	LoopOff LoopMode = iota // play through the queue once, then stop
+	LoopAll                 // wrap around to the first track after the last
+	LoopOne                 // repeat the current track indefinitely
+)
+
 // Player manages audio playback and the song queue.
 type Player struct {
-	mu      sync.Mutex
-	songs   []Song
-	index   int
-	state   State
-	stream  audio.Stream
-	backend audio.Backend
-	volume  float32
+	mu       sync.Mutex
+	songs    []Song
+	index    int
+	state    State
+	stream   audio.Stream
+	backend  audio.Backend
+	volume   float32
+	loopMode LoopMode
 
 	OnTrackChange func(index int)
 	OnStop        func()
@@ -462,6 +472,20 @@ func (p *Player) FFTData() []float32 {
 	return p.stream.FFTData()
 }
 
+// SetLoopMode changes the loop mode.
+func (p *Player) SetLoopMode(m LoopMode) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.loopMode = m
+}
+
+// GetLoopMode returns the current loop mode.
+func (p *Player) GetLoopMode() LoopMode {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.loopMode
+}
+
 // WatchEnd polls for track end and auto-advances. Call in a goroutine.
 func (p *Player) WatchEnd() {
 	for {
@@ -469,8 +493,22 @@ func (p *Player) WatchEnd() {
 		p.mu.Lock()
 		if p.state == StatePlaying && p.stream != nil {
 			if p.stream.IsActive() == audio.ActiveStopped {
+				loop := p.loopMode
+				idx := p.index
+				total := len(p.songs)
 				p.mu.Unlock()
-				_ = p.Next()
+				switch loop {
+				case LoopOne:
+					_ = p.PlayIndex(idx)
+				case LoopOff:
+					if idx >= total-1 {
+						p.Stop()
+					} else {
+						_ = p.Next()
+					}
+				default: // LoopAll
+					_ = p.Next()
+				}
 				continue
 			}
 		}
