@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,15 +66,51 @@ func (b *BeepBackend) OpenFile(path string) (Stream, error) {
 
 	ctrl := &beep.Ctrl{Streamer: beep.Resample(4, format.SampleRate, beepSampleRate, streamer)}
 	vol := &effects.Volume{Streamer: ctrl, Base: 2, Volume: 0, Silent: false}
+	tap := &tapStreamer{inner: vol}
 
 	bs := &beepStream{
 		raw:   streamer,
 		ctrl:  ctrl,
 		vol:   vol,
+		tap:   tap,
 		sr:    format.SampleRate,
 		state: int32(ActiveStopped),
 	}
 	return bs, nil
+}
+
+// ── tapStreamer ───────────────────────────────────────────────────────────────
+
+// tapStreamer wraps a beep.Streamer and copies mono samples into a fixed-size
+// ring buffer so FFTData() can read recent PCM data without blocking playback.
+type tapStreamer struct {
+	inner beep.Streamer
+	mu    sync.Mutex
+	buf   [fftSize]float32
+	pos   int // next write position (mod fftSize)
+}
+
+func (t *tapStreamer) Stream(samples [][2]float64) (n int, ok bool) {
+	n, ok = t.inner.Stream(samples)
+	t.mu.Lock()
+	for i := 0; i < n; i++ {
+		// Mix stereo to mono.
+		t.buf[t.pos] = float32((samples[i][0] + samples[i][1]) * 0.5)
+		t.pos = (t.pos + 1) & (fftSize - 1)
+	}
+	t.mu.Unlock()
+	return
+}
+
+func (t *tapStreamer) Err() error { return t.inner.Err() }
+
+// fftData returns 256 frequency magnitude bins from the most recent PCM data.
+func (t *tapStreamer) fftData() []float32 {
+	t.mu.Lock()
+	buf := t.buf
+	pos := t.pos
+	t.mu.Unlock()
+	return fftMagnitudes(&buf, pos)
 }
 
 // ── beepStream ────────────────────────────────────────────────────────────────
@@ -82,6 +119,7 @@ type beepStream struct {
 	raw   beep.StreamSeekCloser
 	ctrl  *beep.Ctrl
 	vol   *effects.Volume
+	tap   *tapStreamer
 	sr    beep.SampleRate
 	state int32 // atomic: ActiveStopped / ActivePlaying / ActivePaused
 }
@@ -96,7 +134,7 @@ func (s *beepStream) Play(restart bool) error {
 	s.ctrl.Paused = false
 
 	done := make(chan struct{})
-	speaker.Play(beep.Seq(s.vol, beep.Callback(func() {
+	speaker.Play(beep.Seq(s.tap, beep.Callback(func() {
 		// Only mark stopped if we weren't paused or already freed.
 		if atomic.LoadInt32(&s.state) == int32(ActivePlaying) {
 			atomic.StoreInt32(&s.state, int32(ActiveStopped))
@@ -170,4 +208,4 @@ func (s *beepStream) IsActive() int {
 	return int(atomic.LoadInt32(&s.state))
 }
 
-func (s *beepStream) FFTData() []float32 { return nil }
+func (s *beepStream) FFTData() []float32 { return s.tap.fftData() }
