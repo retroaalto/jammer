@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,7 @@ type downloadProgressMsg struct {
 type downloadDoneMsg struct {
 	index int
 	path  string
+	meta  downloader.Meta
 	err   error
 }
 
@@ -40,8 +42,9 @@ type downloadDoneMsg struct {
 type viewKind int
 
 const (
-	viewSongs     viewKind = iota // song list
-	viewPlaylists                 // playlist browser
+	viewSongs          viewKind = iota // song list
+	viewPlaylists                      // playlist browser
+	viewConfirmConvert                 // prompt to convert legacy playlist
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -110,6 +113,11 @@ type Model struct {
 	songsDir string
 	plsDir   string
 
+	// config
+	seekStep     int           // seconds per seek keypress
+	skipCooldown time.Duration // min time between n/p skips
+	autoPlay     bool          // play index 0 on Init (set when launched with -p)
+
 	// view
 	view   viewKind
 	width  int
@@ -120,7 +128,8 @@ type Model struct {
 	scursor     int
 	soffset     int
 	playing     int
-	prevPlaying int // track changes detected in tickMsg
+	prevPlaying int       // track changes detected in tickMsg
+	lastSkip    time.Time // throttle n/p key repeats
 	pos, dur    float64
 	dlStates    map[int]*dlState
 	plsFile     string // absolute path of currently loaded playlist (empty = songs dir)
@@ -129,18 +138,39 @@ type Model struct {
 	playlists []string // filenames (basename only) in plsDir
 	pcursor   int
 	poffset   int
+
+	// legacy convert prompt
+	convertFile    string           // path of legacy playlist pending conversion
+	convertEntries []playlist.Entry // parsed entries from the legacy file
 }
 
-func New(p *player.Player, songsDir, plsDir string) Model {
+func New(p *player.Player, songsDir, plsDir string, seekStep, skipCooldownMs int) Model {
+	return NewWithPlaylist(p, songsDir, plsDir, "", seekStep, skipCooldownMs)
+}
+
+func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekStep, skipCooldownMs int) Model {
+	if seekStep <= 0 {
+		seekStep = 2
+	}
+	if skipCooldownMs <= 0 {
+		skipCooldownMs = 200
+	}
 	m := Model{
-		p:        p,
-		songsDir: songsDir,
-		plsDir:   plsDir,
-		songs:    p.Songs(),
-		playing:  p.Index(),
-		dlStates: make(map[int]*dlState),
+		p:            p,
+		songsDir:     songsDir,
+		plsDir:       plsDir,
+		seekStep:     seekStep,
+		skipCooldown: time.Duration(skipCooldownMs) * time.Millisecond,
+		songs:        p.Songs(),
+		playing:      p.Index(),
+		dlStates:     make(map[int]*dlState),
 	}
 	m.reloadPlaylists()
+	if plsFile != "" {
+		// Use the UI's loadPlaylist so the legacy-convert dialog fires if needed.
+		m.loadPlaylist(filepath.Base(plsFile))
+		m.autoPlay = true
+	}
 	return m
 }
 
@@ -156,6 +186,14 @@ func tick() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
+	if m.autoPlay && len(m.songs) > 0 {
+		return tea.Batch(tick(), func() tea.Msg {
+			if err := m.p.PlayIndex(0); err != nil {
+				jlog.Errorf("auto-play on start: %v", err)
+			}
+			return nil
+		}, m.downloadIfNeeded(0))
+	}
 	return tick()
 }
 
@@ -179,10 +217,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			jlog.Infof("tick: track changed %d → %d", m.prevPlaying, newIdx)
 			m.prevPlaying = newIdx
 			m.playing = newIdx
-			return m, tea.Batch(tick(), m.downloadIfNeeded(newIdx))
 		}
 		m.playing = newIdx
-		return m, tick()
+		// Always check whether the current song needs downloading — this is the
+		// sole trigger for n/p navigation so rapid key-holds don't pile up downloads.
+		return m, tea.Batch(tick(), m.downloadIfNeeded(newIdx))
 
 	case downloadProgressMsg:
 		ds := m.getOrCreateDlState(msg.index)
@@ -208,11 +247,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			jlog.Infof("download done index=%d path=%q", msg.index, msg.path)
 			m.p.UpdateSongPath(msg.index, msg.path)
 
-			// Read ID3 tags from the freshly downloaded file and push them
-			// into the player so the UI shows proper title/artist immediately.
-			if info, err := tags.Read(msg.path); err == nil && info.Title != "" {
-				m.p.UpdateSongTags(msg.index, info.Title, info.Artist)
-				jlog.Infof("download tags index=%d title=%q artist=%q", msg.index, info.Title, info.Artist)
+			// Use metadata from the downloader (title/artist known at download time).
+			// Fall back to reading embedded ID3/Vorbis tags from the file.
+			title, artist := msg.meta.Title, msg.meta.Artist
+			if title == "" {
+				if info, err := tags.Read(msg.path); err == nil && info.Title != "" {
+					title, artist = info.Title, info.Artist
+				}
+			}
+			if title != "" || artist != "" {
+				m.p.UpdateSongTags(msg.index, title, artist)
+				jlog.Infof("download tags index=%d title=%q artist=%q", msg.index, title, artist)
+				if err := tags.Write(msg.path, title, artist); err != nil {
+					jlog.Errorf("download tags write failed index=%d: %v", msg.index, err)
+				}
 			}
 
 			m.songs = m.p.Songs()
@@ -249,6 +297,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab":
+		if m.view == viewConfirmConvert {
+			break // ignore tab during confirm prompt
+		}
 		if m.view == viewSongs {
 			m.view = viewPlaylists
 			m.reloadPlaylists()
@@ -257,10 +308,31 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	default:
+		if m.view == viewConfirmConvert {
+			return m.handleConfirmConvertKey(msg)
+		}
 		if m.view == viewPlaylists {
 			return m.handlePlaylistKey(msg)
 		}
 		return m.handleSongKey(msg)
+	}
+	return m, nil
+}
+
+func (m Model) handleConfirmConvertKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// Convert: overwrite the legacy file with JSONL format.
+		_ = playlist.Save(m.convertFile, m.convertEntries)
+		jlog.Infof("convert: saved JSONL to %q", m.convertFile)
+		fallthrough
+	case "n", "N", "escape":
+		// Load entries but don't set plsFile — legacy file stays untouched
+		// and no metadata updates will be written back to it.
+		m.applyPlaylist("", m.convertEntries)
+		m.convertFile = ""
+		m.convertEntries = nil
+		m.view = viewSongs
 	}
 	return m, nil
 }
@@ -277,7 +349,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.scursor++
 			m.clampSongScroll()
 		}
-	case "enter":
+	case "space", "enter":
 		if m.scursor == m.playing && m.p.State() != player.StateStopped {
 			jlog.Infof("ui: pause song index=%d", m.scursor)
 			if err := m.p.Pause(); err != nil {
@@ -293,15 +365,18 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Download if the song isn't local yet.
 			return m, m.downloadIfNeeded(m.scursor)
 		}
-	case " ":
-		jlog.Infof("ui: toggle pause index=%d", m.playing)
-		if err := m.p.Pause(); err != nil {
-			jlog.Errorf("ui: pause toggle failed: %v", err)
-		}
 	case "s":
 		jlog.Infof("ui: stop")
 		m.p.Stop()
 	case "n":
+		if ds := m.dlStates[m.playing]; ds != nil && ds.active {
+			jlog.Infof("ui: next blocked — download active for index=%d", m.playing)
+			break
+		}
+		if time.Since(m.lastSkip) < m.skipCooldown {
+			break
+		}
+		m.lastSkip = time.Now()
 		if err := m.p.Next(); err != nil {
 			jlog.Errorf("ui: next failed: %v", err)
 		}
@@ -311,7 +386,15 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.clampSongScroll()
 		jlog.Infof("ui: next → index=%d", m.playing)
 		return m, m.downloadIfNeeded(m.playing)
-	case "b":
+	case "p":
+		if ds := m.dlStates[m.playing]; ds != nil && ds.active {
+			jlog.Infof("ui: prev blocked — download active for index=%d", m.playing)
+			break
+		}
+		if time.Since(m.lastSkip) < m.skipCooldown {
+			break
+		}
+		m.lastSkip = time.Now()
 		if err := m.p.Prev(); err != nil {
 			jlog.Errorf("ui: prev failed: %v", err)
 		}
@@ -322,20 +405,38 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		jlog.Infof("ui: prev → index=%d", m.playing)
 		return m, m.downloadIfNeeded(m.playing)
 	case "right", "l":
-		m.p.SeekForward(10)
-		jlog.Info("ui: seek +10s")
+		m.p.SeekForward(float64(m.seekStep))
+		jlog.Infof("ui: seek +%ds", m.seekStep)
 	case "left", "h":
-		m.p.SeekBackward(10)
-		jlog.Info("ui: seek -10s")
+		m.p.SeekBackward(float64(m.seekStep))
+		jlog.Infof("ui: seek -%ds", m.seekStep)
 	case "+", "=":
 		m.p.SetVolume(m.p.Volume() + 0.05)
 		jlog.Infof("ui: volume up → %.0f%%", float64(m.p.Volume())*100)
 	case "-":
 		m.p.SetVolume(m.p.Volume() - 0.05)
 		jlog.Infof("ui: volume down → %.0f%%", float64(m.p.Volume())*100)
+	case "r":
+		if len(m.songs) == 0 {
+			break
+		}
+		idx := rand.Intn(len(m.songs))
+		jlog.Infof("ui: random song index=%d title=%q", idx, m.songs[idx].DisplayTitle())
+		if err := m.p.PlayIndex(idx); err != nil {
+			jlog.Errorf("ui: random play failed: %v", err)
+		}
+		m.playing = idx
+		m.prevPlaying = idx
+		m.scursor = idx
+		m.clampSongScroll()
+		return m, m.downloadIfNeeded(idx)
 	case "d":
 		jlog.Infof("ui: download requested index=%d url=%q", m.scursor, m.songs[m.scursor].URL)
 		return m, m.startDownload(m.scursor)
+	case "delete":
+		return m.removeSong(m.scursor, false), nil
+	case "shift+delete":
+		return m.removeSong(m.scursor, true), nil
 	}
 	return m, nil
 }
@@ -352,7 +453,7 @@ func (m Model) handlePlaylistKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.pcursor++
 			m.clampPLScroll()
 		}
-	case "enter", " ":
+	case "space", "enter":
 		if m.pcursor >= 0 && m.pcursor < len(m.playlists) {
 			jlog.Infof("ui: loading playlist %q", m.playlists[m.pcursor])
 			m.loadPlaylist(m.playlists[m.pcursor])
@@ -366,10 +467,23 @@ func (m Model) handlePlaylistKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) loadPlaylist(filename string) {
 	path := filepath.Join(m.plsDir, filename)
-	entries, err := playlist.Load(path, m.songsDir)
+	entries, legacy, err := playlist.Load(path, m.songsDir)
 	if err != nil {
 		return
 	}
+
+	if legacy {
+		// Don't load yet — ask the user first.
+		m.convertFile = path
+		m.convertEntries = entries
+		m.view = viewConfirmConvert
+		return
+	}
+
+	m.applyPlaylist(path, entries)
+}
+
+func (m *Model) applyPlaylist(path string, entries []playlist.Entry) {
 	m.p.LoadPlaylist(entries)
 	m.songs = m.p.Songs()
 	m.dlStates = make(map[int]*dlState)
@@ -377,6 +491,39 @@ func (m *Model) loadPlaylist(filename string) {
 
 	// Write back enriched metadata (tags filled in for downloaded songs).
 	m.saveCurrentPlaylist()
+}
+
+// removeSong removes the song at index from the playlist.
+// If deleteFile is true the downloaded file is also removed from disk.
+func (m Model) removeSong(index int, deleteFile bool) Model {
+	if index < 0 || index >= len(m.songs) {
+		return m
+	}
+	title := m.songs[index].DisplayTitle()
+	removedPath := m.p.RemoveSong(index)
+
+	if deleteFile && removedPath != "" {
+		if err := os.Remove(removedPath); err != nil {
+			jlog.Errorf("ui: delete file failed path=%q: %v", removedPath, err)
+		} else {
+			jlog.Infof("ui: deleted file path=%q", removedPath)
+		}
+	}
+
+	m.songs = m.p.Songs()
+	delete(m.dlStates, index)
+
+	// Adjust cursor.
+	if m.scursor >= len(m.songs) && m.scursor > 0 {
+		m.scursor = len(m.songs) - 1
+	}
+	m.playing = m.p.Index()
+	m.prevPlaying = m.playing
+	m.clampSongScroll()
+
+	jlog.Infof("ui: removed song %q deleteFile=%v", title, deleteFile)
+	m.saveCurrentPlaylist()
+	return m
 }
 
 // saveCurrentPlaylist persists the current song list (with enriched metadata)
@@ -427,7 +574,7 @@ func (m Model) startDownload(i int) tea.Cmd {
 		return nil
 	}
 	song := m.songs[i]
-	if song.URL == "" || song.Downloaded() {
+	if song.URL == "" {
 		return nil
 	}
 	ds := m.getOrCreateDlState(i)
@@ -444,8 +591,8 @@ func (m Model) startDownload(i int) tea.Cmd {
 	// Goroutine: run the download; result goes to doneCh.
 	go func() {
 		jlog.Infof("download start index=%d url=%q", i, song.URL)
-		path, err := downloader.Download(context.Background(), song.URL, m.songsDir, progressCh)
-		doneCh <- downloadDoneMsg{index: i, path: path, err: err}
+		path, meta, err := downloader.Download(context.Background(), song.URL, m.songsDir, progressCh)
+		doneCh <- downloadDoneMsg{index: i, path: path, meta: meta, err: err}
 	}()
 
 	// Return a streaming Cmd that reads one event (progress or done) and
@@ -540,7 +687,9 @@ func (m Model) View() tea.View {
 	}
 	b.WriteString(styleTitle.Render("  jammer") + "  " + songs + "  " + pls + "\n\n")
 
-	if m.view == viewPlaylists {
+	if m.view == viewConfirmConvert {
+		b.WriteString(m.renderConfirmConvert())
+	} else if m.view == viewPlaylists {
 		b.WriteString(m.renderPlaylists())
 	} else {
 		b.WriteString(m.renderSongs())
@@ -642,12 +791,22 @@ func (m Model) renderSongs() string {
 	vol := int(math.Round(float64(m.p.Volume()) * 100))
 	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s", vol, m.volumeBar())) + "\n\n")
 
-	b.WriteString(styleHelp.Render(" enter: play  space/p: pause  s: stop  n: next  b: prev  d: download") + "\n")
-	b.WriteString(styleHelp.Render(" ←/→: seek 10s  +/-: volume  tab: playlists  q: quit") + "\n")
+	b.WriteString(styleHelp.Render(" space/enter: play/pause  s: stop  n: next  p: prev  r: random  d: download") + "\n")
+	b.WriteString(styleHelp.Render(fmt.Sprintf(" ←/→: seek %ds  +/-: vol  del: remove  S+del: +file  tab: playlists  q: quit", m.seekStep)) + "\n")
 	return b.String()
 }
 
 // ── Playlists view ────────────────────────────────────────────────────────────
+
+func (m Model) renderConfirmConvert() string {
+	var b strings.Builder
+	name := filepath.Base(m.convertFile)
+	b.WriteString(styleHelp.Render("  Legacy playlist format detected: "+name) + "\n\n")
+	b.WriteString("  Convert to new JSONL format? " +
+		stylePlaying.Render("y") + " yes  " +
+		styleNotDL.Render("n") + " no\n")
+	return b.String()
+}
 
 func (m Model) renderPlaylists() string {
 	var b strings.Builder
@@ -678,7 +837,7 @@ func (m Model) renderPlaylists() string {
 	}
 
 	b.WriteByte('\n')
-	b.WriteString(styleHelp.Render(" enter: load playlist  ↑/↓: navigate  tab: back to songs  q: quit") + "\n")
+	b.WriteString(styleHelp.Render(" space: load playlist  ↑/↓: navigate  tab: back to songs  q: quit") + "\n")
 	return b.String()
 }
 
