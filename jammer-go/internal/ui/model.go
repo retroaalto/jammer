@@ -297,6 +297,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err := m.p.PlayIndex(msg.index); err != nil {
 					jlog.Errorf("auto-play failed index=%d: %v", msg.index, err)
 				}
+				return m, m.startViz(0)
 			}
 		}
 
@@ -367,28 +368,43 @@ func (m *Model) stepViz(nBars int) {
 		m.vizTargets = make([]float64, nBars)
 	}
 
-	// Map FFT bins into nBars groups.
-	// With a 512-point FFT at 44100 Hz, each bin covers ~86 Hz.
-	// We use bins 1..nBars*2 (skipping DC bin 0), giving each bar exactly 2 bins,
-	// covering roughly 172–3440 Hz where most musical content sits.
-	start := 1 // skip DC (bin 0)
+	// Map FFT bins into nBars groups using a logarithmic frequency scale.
+	// 512-point FFT at 44100 Hz → bin width ≈ 86 Hz.
+	// Log scale spans 80 Hz – 16000 Hz so bars cover roughly equal octaves,
+	// matching how human hearing perceives pitch.
+	const (
+		binWidth = 44100.0 / 512.0
+		fLow     = 80.0
+		fHigh    = 16000.0
+	)
+	logRatio := math.Log(fHigh / fLow)
 	for i := 0; i < nBars; i++ {
-		lo := start + i*2
-		hi := lo + 2
-		if hi > len(fft) {
-			hi = len(fft)
+		loFreq := fLow * math.Exp(logRatio*float64(i)/float64(nBars))
+		hiFreq := fLow * math.Exp(logRatio*float64(i+1)/float64(nBars))
+		loBin := int(loFreq / binWidth)
+		hiBin := int(hiFreq/binWidth) + 1
+		if loBin < 1 {
+			loBin = 1
 		}
-		if lo >= len(fft) {
+		if hiBin > len(fft) {
+			hiBin = len(fft)
+		}
+		if loBin >= hiBin {
+			hiBin = loBin + 1
+		}
+		if hiBin > len(fft) {
 			break
 		}
 		var sum float32
-		for _, v := range fft[lo:hi] {
+		for _, v := range fft[loBin:hiBin] {
 			sum += v
 		}
-		avg := float64(sum) / float64(hi-lo)
-		// Sqrt compresses the wide dynamic range of FFT magnitudes into something
-		// visually natural, then scale up so typical music fills the bar height.
+		avg := float64(sum) / float64(hiBin-loBin)
 		avg = math.Sqrt(avg) * 3
+		// Rising gain: compensate for natural high-frequency roll-off.
+		// Ramps from 1× at the left edge to 5× at the right edge.
+		gain := 1.0 + 4.0*(float64(i)/float64(nBars-1))
+		avg *= gain
 		if avg > 1 {
 			avg = 1
 		}
