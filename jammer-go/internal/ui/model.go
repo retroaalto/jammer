@@ -235,6 +235,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ds.err = msg.err
 			ds.frac = 0
 			jlog.Errorf("download failed index=%d: %v", msg.index, msg.err)
+			// Skip to the next song if this was the currently playing track.
+			if msg.index == m.playing {
+				jlog.Infof("download failed for playing track — skipping to next index=%d", msg.index)
+				if err := m.p.Next(); err != nil {
+					jlog.Errorf("auto-skip after failed download: %v", err)
+				}
+				m.playing = m.p.Index()
+				m.prevPlaying = m.playing
+				m.scursor = m.playing
+				m.clampSongScroll()
+				return m, m.downloadIfNeeded(m.playing)
+			}
 		} else {
 			ds.frac = 1
 			ds.err = nil
@@ -547,7 +559,7 @@ func (m Model) downloadIfNeeded(i int) tea.Cmd {
 	if s.Downloaded() || s.URL == "" {
 		return nil
 	}
-	if ds := m.dlStates[i]; ds != nil && (ds.active || ds.frac >= 1) {
+	if ds := m.dlStates[i]; ds != nil && (ds.active || ds.frac >= 1 || ds.err != nil) {
 		return nil
 	}
 	jlog.Infof("auto-download: triggering index=%d url=%q", i, s.URL)
