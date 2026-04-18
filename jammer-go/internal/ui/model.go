@@ -448,7 +448,7 @@ func (m Model) handleConfirmConvertKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		_ = playlist.Save(m.convertFile, m.convertEntries)
 		jlog.Infof("convert: saved JSONL to %q", m.convertFile)
 		fallthrough
-	case "n", "N", "escape":
+	case "n", "N", "esc":
 		// Load entries but don't set plsFile — legacy file stays untouched
 		// and no metadata updates will be written back to it.
 		m.applyPlaylist("", m.convertEntries)
@@ -567,16 +567,18 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.startDownload(realIdx)
 	case "/":
 		m.filtering = true
-		if m.filteredIdxs == nil {
-			m.filteredIdxs = make([]int, 0)
-		}
+		m.filter = ""
+		m.filteredIdxs = nil
+		m.scursor = 0
+		m.soffset = 0
 		return m, nil
-	case "escape":
+	case "esc":
 		if m.filter != "" || m.filteredIdxs != nil {
 			m.filter = ""
 			m.filteredIdxs = nil
-			m.scursor = 0
+			m.scursor = m.playing
 			m.soffset = 0
+			m.clampSongScroll()
 		}
 	case "delete":
 		_, realIdx := m.filterSong(m.scursor)
@@ -592,12 +594,33 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		m.filtering = false
-	case "escape":
+		// Play the currently selected (filtered) song immediately.
+		if m.scursor < m.filterLen() {
+			_, realIdx := m.filterSong(m.scursor)
+			if realIdx == m.playing && m.p.State() != player.StateStopped {
+				if err := m.p.Pause(); err != nil {
+					jlog.Errorf("ui: pause failed: %v", err)
+				}
+				if m.p.State() == player.StatePlaying {
+					return m, m.startViz(0)
+				}
+			} else {
+				jlog.Infof("ui: filter enter play index=%d", realIdx)
+				if err := m.p.PlayIndex(realIdx); err != nil {
+					jlog.Errorf("ui: PlayIndex failed index=%d: %v", realIdx, err)
+				}
+				m.playing = realIdx
+				m.prevPlaying = realIdx
+				return m, tea.Batch(m.downloadIfNeeded(realIdx), m.startViz(0))
+			}
+		}
+	case "esc":
 		m.filtering = false
 		m.filter = ""
 		m.filteredIdxs = nil
-		m.scursor = 0
+		m.scursor = m.playing
 		m.soffset = 0
+		m.clampSongScroll()
 	case "ctrl+n":
 		if m.scursor < m.filterLen()-1 {
 			m.scursor++
