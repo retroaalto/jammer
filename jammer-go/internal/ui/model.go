@@ -598,6 +598,16 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.filteredIdxs = nil
 		m.scursor = 0
 		m.soffset = 0
+	case "ctrl+n":
+		if m.scursor < m.filterLen()-1 {
+			m.scursor++
+			m.clampSongScroll()
+		}
+	case "ctrl+p":
+		if m.scursor > 0 {
+			m.scursor--
+			m.clampSongScroll()
+		}
 	case "backspace":
 		if len(m.filter) > 0 {
 			runes := []rune(m.filter)
