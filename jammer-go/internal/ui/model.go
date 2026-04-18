@@ -114,9 +114,8 @@ type Model struct {
 	plsDir   string
 
 	// config
-	seekStep     int           // seconds per seek keypress
-	skipCooldown time.Duration // min time between n/p skips
-	autoPlay     bool          // play index 0 on Init (set when launched with -p)
+	seekStep int  // seconds per seek keypress
+	autoPlay bool // play index 0 on Init (set when launched with -p)
 
 	// view
 	view   viewKind
@@ -128,8 +127,7 @@ type Model struct {
 	scursor     int
 	soffset     int
 	playing     int
-	prevPlaying int       // track changes detected in tickMsg
-	lastSkip    time.Time // throttle n/p key repeats
+	prevPlaying int // track changes detected in tickMsg
 	pos, dur    float64
 	dlStates    map[int]*dlState
 	plsFile     string // absolute path of currently loaded playlist (empty = songs dir)
@@ -144,26 +142,22 @@ type Model struct {
 	convertEntries []playlist.Entry // parsed entries from the legacy file
 }
 
-func New(p *player.Player, songsDir, plsDir string, seekStep, skipCooldownMs int) Model {
-	return NewWithPlaylist(p, songsDir, plsDir, "", seekStep, skipCooldownMs)
+func New(p *player.Player, songsDir, plsDir string, seekStep int) Model {
+	return NewWithPlaylist(p, songsDir, plsDir, "", seekStep)
 }
 
-func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekStep, skipCooldownMs int) Model {
+func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekStep int) Model {
 	if seekStep <= 0 {
 		seekStep = 2
 	}
-	if skipCooldownMs <= 0 {
-		skipCooldownMs = 200
-	}
 	m := Model{
-		p:            p,
-		songsDir:     songsDir,
-		plsDir:       plsDir,
-		seekStep:     seekStep,
-		skipCooldown: time.Duration(skipCooldownMs) * time.Millisecond,
-		songs:        p.Songs(),
-		playing:      p.Index(),
-		dlStates:     make(map[int]*dlState),
+		p:        p,
+		songsDir: songsDir,
+		plsDir:   plsDir,
+		seekStep: seekStep,
+		songs:    p.Songs(),
+		playing:  p.Index(),
+		dlStates: make(map[int]*dlState),
 	}
 	m.reloadPlaylists()
 	if plsFile != "" {
@@ -373,10 +367,6 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			jlog.Infof("ui: next blocked — download active for index=%d", m.playing)
 			break
 		}
-		if time.Since(m.lastSkip) < m.skipCooldown {
-			break
-		}
-		m.lastSkip = time.Now()
 		if err := m.p.Next(); err != nil {
 			jlog.Errorf("ui: next failed: %v", err)
 		}
@@ -391,10 +381,6 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			jlog.Infof("ui: prev blocked — download active for index=%d", m.playing)
 			break
 		}
-		if time.Since(m.lastSkip) < m.skipCooldown {
-			break
-		}
-		m.lastSkip = time.Now()
 		if err := m.p.Prev(); err != nil {
 			jlog.Errorf("ui: prev failed: %v", err)
 		}

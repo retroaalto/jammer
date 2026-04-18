@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,9 +12,51 @@ import (
 	"github.com/jooapa/jammer/jammer-go/internal/audio"
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
-	"github.com/jooapa/jammer/jammer-go/internal/playlist"
 	"github.com/jooapa/jammer/jammer-go/internal/ui"
 )
+
+// settings mirrors the fields of settings.json that main.go cares about.
+// Unknown fields are preserved via the raw map when saving.
+type settings struct {
+	BackEndType int `json:"backEndType"`
+	SeekStep    int `json:"seekStep"` // seconds per seek keypress; 0 or missing → default 2
+}
+
+const defaultSeekStep = 2
+
+func stripBOM(data []byte) []byte {
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		return data[3:]
+	}
+	return data
+}
+
+func loadSettings(path string) settings {
+	var s settings
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return s
+	}
+	_ = json.Unmarshal(stripBOM(data), &s)
+	return s
+}
+
+func saveBackend(path string, backendType int) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(stripBOM(data), &raw); err != nil {
+		return
+	}
+	raw["backEndType"] = backendType
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, out, 0o644)
+}
 
 func main() {
 	if err := jlog.Init(); err != nil {
@@ -28,25 +71,55 @@ func main() {
 		os.Exit(1)
 	}
 
-	libPath := findLib(exeDir, "libbass.so")
-	if libPath == "" {
-		jlog.Error("libbass.so not found")
-		fmt.Fprintln(os.Stderr, "libbass.so not found — set LD_LIBRARY_PATH or place the lib next to the binary")
-		os.Exit(1)
-	}
-	jlog.Infof("loading BASS from %s", libPath)
+	settingsPath := filepath.Join(jammerDir(""), "settings.json")
+	cfg := loadSettings(settingsPath)
 
-	if err := audio.Load(libPath); err != nil {
-		jlog.Errorf("audio.Load: %v", err)
-		fmt.Fprintln(os.Stderr, "audio load error:", err)
-		os.Exit(1)
+	// Parse flags: -p <playlist>  -b (use BASS backend)
+	playlistFlag := ""
+	bassFlag := false
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-p":
+			if i+1 < len(args) {
+				i++
+				playlistFlag = args[i]
+			}
+		case "-b":
+			bassFlag = true
+		}
 	}
-	if err := audio.Init(); err != nil {
-		jlog.Errorf("audio.Init: %v", err)
+
+	// Determine backend: -b flag overrides settings.json for this session only.
+	useBass := cfg.BackEndType == 1 || bassFlag
+
+	var backend audio.Backend
+	if useBass {
+		libPath := findLib(exeDir, "libbass.so")
+		if libPath == "" {
+			fmt.Fprintln(os.Stderr, "BASS backend requested but libbass.so not found — set LD_LIBRARY_PATH or place the lib next to the binary")
+			os.Exit(1)
+		}
+		jlog.Infof("loading BASS from %s", libPath)
+		b, err := audio.LoadBass(libPath)
+		if err != nil {
+			jlog.Errorf("audio.LoadBass: %v", err)
+			fmt.Fprintln(os.Stderr, "audio load error:", err)
+			os.Exit(1)
+		}
+		backend = b
+		jlog.Info("audio backend: BASS")
+	} else {
+		backend = audio.NewBeepBackend()
+		jlog.Info("audio backend: beep (default)")
+	}
+
+	if err := backend.Init(); err != nil {
+		jlog.Errorf("backend.Init: %v", err)
 		fmt.Fprintln(os.Stderr, "audio init error:", err)
 		os.Exit(1)
 	}
-	defer audio.Free()
+	defer backend.Free()
 
 	songsDir := jammerDir("songs")
 	plsDir := jammerDir("playlists")
@@ -59,38 +132,20 @@ func main() {
 		}
 	}
 
-	p := player.New()
+	p := player.New(backend)
 
-	// Parse flags.
-	playlistFlag := ""
-	for i, arg := range os.Args[1:] {
-		if arg == "-p" && i+1 < len(os.Args[1:]) {
-			playlistFlag = os.Args[i+2]
-		}
-	}
-
+	resolvedPlaylist := ""
 	if playlistFlag != "" {
-		// Resolve playlist file: try exact name, then with .jammer extension.
 		resolved := resolvePlaylist(plsDir, playlistFlag)
 		if resolved == "" {
 			fmt.Fprintf(os.Stderr, "playlist %q not found in %s\n", playlistFlag, plsDir)
 			os.Exit(1)
 		}
-		jlog.Infof("-p: loading playlist %q", resolved)
-		entries, err := playlist.Load(filepath.Join(plsDir, resolved), songsDir)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "failed to load playlist:", err)
-			os.Exit(1)
-		}
-		p.LoadPlaylist(entries)
-		jlog.Infof("-p: loaded %d songs", len(p.Songs()))
-		// Start playing the first song immediately.
-		if len(p.Songs()) > 0 {
-			if err := p.PlayIndex(0); err != nil {
-				jlog.Errorf("-p: PlayIndex(0) failed: %v", err)
-			}
-		}
-	} else {
+		resolvedPlaylist = filepath.Join(plsDir, resolved)
+		jlog.Infof("-p: will load playlist %q via UI", resolvedPlaylist)
+	}
+
+	if playlistFlag == "" {
 		jlog.Infof("loading songs from %s", songsDir)
 		if err := p.LoadDir(songsDir); err != nil {
 			jlog.Errorf("LoadDir: %v", err)
@@ -102,7 +157,17 @@ func main() {
 
 	go p.WatchEnd()
 
-	m := ui.New(p, songsDir, plsDir)
+	seekStep := cfg.SeekStep
+	if seekStep <= 0 {
+		seekStep = defaultSeekStep
+	}
+
+	var m ui.Model
+	if resolvedPlaylist != "" {
+		m = ui.NewWithPlaylist(p, songsDir, plsDir, resolvedPlaylist, seekStep)
+	} else {
+		m = ui.New(p, songsDir, plsDir, seekStep)
+	}
 	prog := tea.NewProgram(m)
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "TUI error:", err)
@@ -176,5 +241,8 @@ func resolvePlaylist(plsDir, name string) string {
 
 func jammerDir(sub string) string {
 	home, _ := os.UserHomeDir()
+	if sub == "" {
+		return filepath.Join(home, "jammer")
+	}
 	return filepath.Join(home, "jammer", sub)
 }
