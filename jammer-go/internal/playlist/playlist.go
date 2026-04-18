@@ -73,12 +73,12 @@ func Save(path string, entries []Entry) error {
 
 // LoadJammer parses a .jammer playlist file.
 // Supports both the new JSONL format and the legacy url?|{...} format.
-// If the file is detected as legacy format it is automatically converted
-// in-place to the new JSONL format.
-func LoadJammer(path, songsDir string) ([]Entry, error) {
+// Returns the entries, whether the file was in legacy format, and any error.
+// Legacy files are NOT auto-converted — the caller decides what to do.
+func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer f.Close()
 
@@ -144,15 +144,10 @@ func LoadJammer(path, songsDir string) ([]Entry, error) {
 		entries = append(entries, e)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	// Auto-convert legacy file to JSONL in-place.
-	if legacy {
-		_ = Save(path, entries) // best-effort; parsed entries are returned regardless
-	}
-
-	return entries, nil
+	return entries, legacy, nil
 }
 
 // LoadM3U parses a .m3u or .m3u8 playlist file.
@@ -279,11 +274,13 @@ func List(dir string) ([]string, error) {
 }
 
 // Load auto-detects format and loads a playlist file.
-func Load(path, songsDir string) ([]Entry, error) {
+// Returns the entries, whether the file was in legacy format, and any error.
+func Load(path, songsDir string) ([]Entry, bool, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".m3u", ".m3u8":
-		return LoadM3U(path, songsDir)
+		entries, err := LoadM3U(path, songsDir)
+		return entries, false, err
 	default: // .jammer, .playlist, etc.
 		return LoadJammer(path, songsDir)
 	}

@@ -26,9 +26,16 @@ type Progress struct {
 	Message string
 }
 
-// Download downloads the song at url into songsDir and returns the local path.
+// Meta holds track metadata returned alongside the downloaded file path.
+type Meta struct {
+	Title  string
+	Artist string
+}
+
+// Download downloads the song at url into songsDir and returns the local path
+// and any track metadata known at download time (title, artist).
 // progress receives updates; it is closed when the download finishes.
-func Download(ctx context.Context, rawURL, songsDir string, progress chan<- Progress) (string, error) {
+func Download(ctx context.Context, rawURL, songsDir string, progress chan<- Progress) (string, Meta, error) {
 	defer close(progress)
 	jlog.Infof("downloader: start url=%q", rawURL)
 
@@ -41,7 +48,8 @@ func Download(ctx context.Context, rawURL, songsDir string, progress chan<- Prog
 	if isYouTube(rawURL) {
 		return downloadYouTube(ctx, rawURL, songsDir, progress)
 	}
-	return downloadHTTP(ctx, rawURL, songsDir, progress)
+	path, err := downloadHTTP(ctx, rawURL, songsDir, progress)
+	return path, Meta{}, err
 }
 
 // ── SoundCloud ────────────────────────────────────────────────────────────────
@@ -59,13 +67,16 @@ type scTrack struct {
 		} `json:"transcodings"`
 	} `json:"media"`
 	Title string `json:"title"`
+	User  struct {
+		Username string `json:"username"`
+	} `json:"user"`
 }
 
 type scStreamResponse struct {
 	URL string `json:"url"`
 }
 
-func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress chan<- Progress) (string, error) {
+func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress chan<- Progress) (string, Meta, error) {
 	send := func(frac float64, msg string) {
 		select {
 		case progress <- Progress{Frac: frac, Message: msg}:
@@ -77,7 +88,6 @@ func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress
 	clientID, err := scid.Get(ctx)
 	if err != nil {
 		jlog.Errorf("sc: client_id fetch failed: %v — falling back to yt-dlp", err)
-		// client_id fetch failed — fall back to yt-dlp
 		send(0.05, "client_id unavailable, trying yt-dlp...")
 		return downloadViaYtdlp(ctx, trackURL, songsDir, progress)
 	}
@@ -87,7 +97,6 @@ func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress
 	track, err := scResolveTrack(ctx, trackURL, clientID)
 	if err != nil {
 		jlog.Errorf("sc: resolve failed: %v — invalidating client_id and retrying", err)
-		// Possibly stale client_id — invalidate and retry once
 		scid.Invalidate()
 		send(0.1, "retrying with fresh client_id...")
 		clientID, err = scid.Get(ctx)
@@ -101,6 +110,8 @@ func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress
 			return downloadViaYtdlp(ctx, trackURL, songsDir, progress)
 		}
 	}
+
+	meta := Meta{Title: track.Title, Artist: track.User.Username}
 
 	// Pick best transcoding: prefer progressive mp3
 	var chosen *struct {
@@ -164,22 +175,22 @@ func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress
 	send(0.25, "downloading...")
 	req, err := http.NewRequestWithContext(ctx, "GET", streamURL, nil)
 	if err != nil {
-		return "", err
+		return "", meta, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("sc download: %w", err)
+		return "", meta, fmt.Errorf("sc download: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("sc download: HTTP %d", resp.StatusCode)
+		return "", meta, fmt.Errorf("sc download: HTTP %d", resp.StatusCode)
 	}
 
 	tmpF, err := os.Create(tmpPath)
 	if err != nil {
-		return "", err
+		return "", meta, err
 	}
 
 	total := resp.ContentLength
@@ -191,7 +202,7 @@ func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress
 			if _, werr := tmpF.Write(buf[:n]); werr != nil {
 				tmpF.Close()
 				os.Remove(tmpPath)
-				return "", werr
+				return "", meta, werr
 			}
 			written += int64(n)
 			if total > 0 {
@@ -204,17 +215,17 @@ func downloadSoundCloud(ctx context.Context, trackURL, songsDir string, progress
 		if rerr != nil {
 			tmpF.Close()
 			os.Remove(tmpPath)
-			return "", rerr
+			return "", meta, rerr
 		}
 	}
 	tmpF.Close()
 
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		os.Remove(tmpPath)
-		return "", err
+		return "", meta, err
 	}
 	send(1.0, "done")
-	return finalPath, nil
+	return finalPath, meta, nil
 }
 
 func scResolveTrack(ctx context.Context, trackURL, clientID string) (*scTrack, error) {
@@ -266,7 +277,7 @@ func scGetStreamURL(ctx context.Context, transcodingURL, clientID string) (strin
 
 // ── YouTube ───────────────────────────────────────────────────────────────────
 
-func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- Progress) (string, error) {
+func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- Progress) (string, Meta, error) {
 	send := func(frac float64, msg string) {
 		select {
 		case progress <- Progress{Frac: frac, Message: msg}:
@@ -278,8 +289,10 @@ func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- 
 	client := yt.Client{}
 	video, err := client.GetVideoContext(ctx, url)
 	if err != nil {
-		return "", fmt.Errorf("youtube: %w", err)
+		return "", Meta{}, fmt.Errorf("youtube: %w", err)
 	}
+
+	meta := Meta{Title: video.Title, Artist: video.Author}
 
 	// Pick best audio-only format (prefer opus/webm, fallback to mp4 audio)
 	formats := video.Formats.WithAudioChannels()
@@ -296,13 +309,13 @@ func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- 
 		chosen = &formats[0]
 	}
 	if chosen == nil {
-		return "", fmt.Errorf("youtube: no suitable format found")
+		return "", meta, fmt.Errorf("youtube: no suitable format found")
 	}
 
 	send(0.05, "starting download...")
 	stream, _, err := client.GetStreamContext(ctx, video, chosen)
 	if err != nil {
-		return "", fmt.Errorf("youtube stream: %w", err)
+		return "", meta, fmt.Errorf("youtube stream: %w", err)
 	}
 	defer stream.Close()
 
@@ -320,7 +333,7 @@ func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- 
 
 	tmpF, err := os.Create(tmpPath)
 	if err != nil {
-		return "", err
+		return "", meta, err
 	}
 
 	totalBytes := chosen.ContentLength
@@ -332,7 +345,7 @@ func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- 
 			if _, werr := tmpF.Write(buf[:n]); werr != nil {
 				tmpF.Close()
 				os.Remove(tmpPath)
-				return "", werr
+				return "", meta, werr
 			}
 			written += int64(n)
 			if totalBytes > 0 {
@@ -345,7 +358,7 @@ func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- 
 		if rerr != nil {
 			tmpF.Close()
 			os.Remove(tmpPath)
-			return "", rerr
+			return "", meta, rerr
 		}
 	}
 	tmpF.Close()
@@ -358,23 +371,23 @@ func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- 
 			"-c:a", "libvorbis", "-q:a", "5", oggPath)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			os.Remove(tmpPath)
-			return "", fmt.Errorf("ffmpeg: %w\n%s", err, out)
+			return "", meta, fmt.Errorf("ffmpeg: %w\n%s", err, out)
 		}
 		os.Remove(tmpPath)
 		send(1.0, "done")
-		return oggPath, nil
+		return oggPath, meta, nil
 	}
 
 	if err := os.Rename(tmpPath, finalPath); err != nil {
-		return "", err
+		return "", meta, err
 	}
 	send(1.0, "done")
-	return finalPath, nil
+	return finalPath, meta, nil
 }
 
 // ── SoundCloud / yt-dlp fallback ──────────────────────────────────────────────
 
-func downloadViaYtdlp(ctx context.Context, url, songsDir string, progress chan<- Progress) (string, error) {
+func downloadViaYtdlp(ctx context.Context, url, songsDir string, progress chan<- Progress) (string, Meta, error) {
 	send := func(frac float64, msg string) {
 		select {
 		case progress <- Progress{Frac: frac, Message: msg}:
@@ -385,7 +398,7 @@ func downloadViaYtdlp(ctx context.Context, url, songsDir string, progress chan<-
 	// Check yt-dlp is available
 	ytdlpBin, err := findYtdlp()
 	if err != nil {
-		return "", err
+		return "", Meta{}, err
 	}
 
 	basename := playlist.URLToExpectedBasename(url)
@@ -397,6 +410,7 @@ func downloadViaYtdlp(ctx context.Context, url, songsDir string, progress chan<-
 		"--extract-audio",
 		"--audio-format", "mp3",
 		"--audio-quality", "0",
+		"--add-metadata",
 		"--output", outputTemplate,
 		url,
 	)
@@ -413,25 +427,25 @@ func downloadViaYtdlp(ctx context.Context, url, songsDir string, progress chan<-
 		select {
 		case err := <-done:
 			if err != nil {
-				return "", fmt.Errorf("yt-dlp: %w", err)
+				return "", Meta{}, fmt.Errorf("yt-dlp: %w", err)
 			}
 			// Find the file yt-dlp wrote (basename + .mp3)
 			path := filepath.Join(songsDir, basename+".mp3")
 			if _, serr := os.Stat(path); serr == nil {
 				send(1.0, "done")
-				return path, nil
+				return path, Meta{}, nil
 			}
 			// Fallback: search for any file matching basename.*
 			matches, _ := filepath.Glob(filepath.Join(songsDir, basename+".*"))
 			for _, m := range matches {
 				if !strings.HasSuffix(m, ".tmp") {
 					send(1.0, "done")
-					return m, nil
+					return m, Meta{}, nil
 				}
 			}
-			return "", fmt.Errorf("yt-dlp: output file not found for %s", basename)
+			return "", Meta{}, fmt.Errorf("yt-dlp: output file not found for %s", basename)
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", Meta{}, ctx.Err()
 		default:
 			frac += 0.02
 			if frac > 0.95 {

@@ -79,7 +79,7 @@ func TestDownloadHTTP_MP3(t *testing.T) {
 	songsDir := t.TempDir()
 	progressCh := make(chan downloader.Progress, 32)
 
-	path, err := downloader.Download(context.Background(), srv.URL+"/audio/test-track", songsDir, progressCh)
+	path, _, err := downloader.Download(context.Background(), srv.URL+"/audio/test-track", songsDir, progressCh)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestDownloadHTTP_ReportsProgress(t *testing.T) {
 	songsDir := t.TempDir()
 	progressCh := make(chan downloader.Progress, 128)
 
-	_, err := downloader.Download(context.Background(), srv.URL+"/audio/progress-test", songsDir, progressCh)
+	_, _, err := downloader.Download(context.Background(), srv.URL+"/audio/progress-test", songsDir, progressCh)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestDownloadHTTP_ContextCancelled(t *testing.T) {
 	cancel() // cancel immediately
 
 	progressCh := make(chan downloader.Progress, 8)
-	_, err := downloader.Download(ctx, srv.URL+"/audio/slow", t.TempDir(), progressCh)
+	_, _, err := downloader.Download(ctx, srv.URL+"/audio/slow", t.TempDir(), progressCh)
 	if err == nil {
 		t.Error("expected error on cancelled context, got nil")
 	}

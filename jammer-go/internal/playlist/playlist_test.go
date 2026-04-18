@@ -91,7 +91,7 @@ func TestLoadJammer_WithMeta(t *testing.T) {
 	content := `https://soundcloud.com/author/track?|{"Title":"My Track","Author":"DJ Test"}` + "\n"
 	path := writeTemp(t, content)
 
-	entries, err := playlist.LoadJammer(path, t.TempDir())
+	entries, _, err := playlist.LoadJammer(path, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestLoadJammer_WithMeta(t *testing.T) {
 func TestLoadJammer_EmptyMeta(t *testing.T) {
 	content := "https://soundcloud.com/author/track?|{}\n"
 	path := writeTemp(t, content)
-	entries, err := playlist.LoadJammer(path, t.TempDir())
+	entries, _, err := playlist.LoadJammer(path, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestLoadJammer_EmptyMeta(t *testing.T) {
 func TestLoadJammer_BareURL(t *testing.T) {
 	content := "https://soundcloud.com/author/track\n"
 	path := writeTemp(t, content)
-	entries, err := playlist.LoadJammer(path, t.TempDir())
+	entries, _, err := playlist.LoadJammer(path, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestLoadJammer_BareURL(t *testing.T) {
 func TestLoadJammer_SkipsBlankLines(t *testing.T) {
 	content := "\n\nhttps://soundcloud.com/a/b?|{}\n\nhttps://soundcloud.com/c/d?|{}\n\n"
 	path := writeTemp(t, content)
-	entries, err := playlist.LoadJammer(path, t.TempDir())
+	entries, _, err := playlist.LoadJammer(path, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestLoadJammer_ResolvesLocalFile(t *testing.T) {
 	content := `https://soundcloud.com/author/track?|{"Title":"T","Author":"A"}` + "\n"
 	path := writeTemp(t, content)
 
-	entries, err := playlist.LoadJammer(path, songsDir)
+	entries, _, err := playlist.LoadJammer(path, songsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestJSONLRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loaded, err := playlist.LoadJammer(path, dir)
+	loaded, _, err := playlist.LoadJammer(path, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestJSONLLegacyCompat(t *testing.T) {
 	content := `https://soundcloud.com/author/track?|{"Title":"My Track","Author":"DJ Test"}` + "\n"
 	os.WriteFile(path, []byte(content), 0o644)
 
-	entries, err := playlist.LoadJammer(path, dir)
+	entries, _, err := playlist.LoadJammer(path, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,12 +277,18 @@ func TestJSONLLegacyCompat(t *testing.T) {
 		t.Errorf("Author: got %q", entries[0].Author)
 	}
 
-	// File should have been rewritten in JSONL format.
+	// File should NOT be auto-converted; conversion is opt-in via the UI.
 	raw, _ := os.ReadFile(path)
-	if strings.Contains(string(raw), "?|") {
-		t.Errorf("expected file to be converted to JSONL, but still contains legacy delimiter:\n%s", raw)
+	if !strings.Contains(string(raw), "?|") {
+		t.Errorf("expected legacy file to be left untouched, but legacy delimiter is gone:\n%s", raw)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
-		t.Errorf("expected file to start with JSON object, got:\n%s", raw)
+
+	// The legacy bool return should be true.
+	_, legacy, err2 := playlist.LoadJammer(path, dir)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+	if !legacy {
+		t.Error("expected legacy=true for a file with the old ?| format")
 	}
 }

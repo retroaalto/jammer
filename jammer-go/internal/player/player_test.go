@@ -1,16 +1,27 @@
 package player_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/jooapa/jammer/jammer-go/internal/audio"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
+	"github.com/jooapa/jammer/jammer-go/internal/tags"
 )
+
+// minimalMP3 is a tiny valid MP3 file (ID3v2 header + one silent MPEG frame).
+var minimalMP3 = []byte{
+	0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0xff, 0xfb, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+}
 
 // helpers
 
 func makePlayer(songs ...player.Song) *player.Player {
-	p := player.NewHeadless()
+	p := player.NewHeadless(audio.NewNullBackend())
 	p.SetSongs(songs)
 	return p
 }
@@ -148,5 +159,65 @@ func TestDisplayTitle_URLFallback(t *testing.T) {
 	s := player.Song{URL: "https://soundcloud.com/a/b"}
 	if s.DisplayTitle() != "https://soundcloud.com/a/b" {
 		t.Errorf("got %q", s.DisplayTitle())
+	}
+}
+
+// ── LoadPlaylist enriches from embedded file tags ─────────────────────────────
+
+// TestLoadPlaylist_EnrichesFromFileTags verifies that when a song is already
+// downloaded (has a local path) but the playlist entry has no title/author,
+// LoadPlaylist reads the embedded ID3 tags from the file and populates them.
+// This covers the "song already downloaded" case where saveCurrentPlaylist
+// will then persist the enriched metadata back to the .jammer file.
+func TestLoadPlaylist_EnrichesFromFileTags(t *testing.T) {
+	dir := t.TempDir()
+	mp3Path := filepath.Join(dir, "track.mp3")
+
+	if err := os.WriteFile(mp3Path, minimalMP3, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tags.Write(mp3Path, "Tagged Title", "Tagged Artist"); err != nil {
+		t.Fatalf("tags.Write: %v", err)
+	}
+
+	p := player.NewHeadless(audio.NewNullBackend())
+	// Entry has a path but no title/author — simulates a playlist loaded from
+	// disk where the .jammer file was saved before metadata was known.
+	entries := []playlist.Entry{
+		{URL: "https://soundcloud.com/a/b", Path: mp3Path},
+	}
+	p.LoadPlaylist(entries)
+
+	songs := p.Songs()
+	if songs[0].Title != "Tagged Title" {
+		t.Errorf("Title = %q, want %q", songs[0].Title, "Tagged Title")
+	}
+	if songs[0].Author != "Tagged Artist" {
+		t.Errorf("Author = %q, want %q", songs[0].Author, "Tagged Artist")
+	}
+}
+
+// TestLoadPlaylist_DoesNotOverwriteExistingTitle verifies that if the playlist
+// already has a title for a song, the embedded file tags are not read.
+func TestLoadPlaylist_DoesNotOverwriteExistingTitle(t *testing.T) {
+	dir := t.TempDir()
+	mp3Path := filepath.Join(dir, "track.mp3")
+
+	if err := os.WriteFile(mp3Path, minimalMP3, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tags.Write(mp3Path, "File Title", "File Artist"); err != nil {
+		t.Fatalf("tags.Write: %v", err)
+	}
+
+	p := player.NewHeadless(audio.NewNullBackend())
+	entries := []playlist.Entry{
+		{Path: mp3Path, Title: "Stored Title", Author: "Stored Artist"},
+	}
+	p.LoadPlaylist(entries)
+
+	songs := p.Songs()
+	if songs[0].Title != "Stored Title" {
+		t.Errorf("Title = %q, want stored title %q", songs[0].Title, "Stored Title")
 	}
 }
