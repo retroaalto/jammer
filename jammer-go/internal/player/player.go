@@ -57,8 +57,8 @@ const (
 type LoopMode int
 
 const (
-	LoopOff LoopMode = iota // play through the queue once, then stop
-	LoopAll                 // wrap around to the first track after the last
+	LoopAll LoopMode = iota // wrap around to the first track after the last (default)
+	LoopOff                 // play through the queue once, then stop
 	LoopOne                 // repeat the current track indefinitely
 )
 

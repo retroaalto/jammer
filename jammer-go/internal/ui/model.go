@@ -1065,7 +1065,7 @@ func (m Model) renderSongs() string {
 	b.WriteString(styleTitle.Render(fmt.Sprintf(" %s  %s", icon, nowTitle)) + "\n")
 	b.WriteString(" " + m.progressBar() + "\n")
 	vol := int(math.Round(float64(m.p.Volume()) * 100))
-	loopLabels := [3]string{"loop:off", "loop:all", "loop:one"}
+	loopLabels := [3]string{"loop:all", "loop:off", "loop:one"}
 	loopLabel := loopLabels[int(m.p.GetLoopMode())%3]
 	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s   %s", vol, m.volumeBar(), loopLabel)) + "\n\n")
 
