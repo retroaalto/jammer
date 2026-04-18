@@ -55,25 +55,27 @@ const (
 
 // Player manages audio playback and the song queue.
 type Player struct {
-	mu     sync.Mutex
-	songs  []Song
-	index  int
-	state  State
-	stream audio.Stream
-	volume float32
+	mu      sync.Mutex
+	songs   []Song
+	index   int
+	state   State
+	stream  audio.Stream
+	backend audio.Backend
+	volume  float32
 
 	OnTrackChange func(index int)
 	OnStop        func()
 }
 
-// New creates a new Player. BASS must already be loaded and initialised.
-func New() *Player {
-	return &Player{volume: 0.8}
+// New creates a new Player using the given audio backend.
+// The backend must already be initialised (Init called) before passing it here.
+func New(backend audio.Backend) *Player {
+	return &Player{volume: 0.8, backend: backend}
 }
 
-// NewHeadless creates a Player with no audio backend — safe for tests.
-func NewHeadless() *Player {
-	return &Player{volume: 0.8}
+// NewHeadless creates a Player with the given backend — safe for tests using audio.NewNullBackend().
+func NewHeadless(backend audio.Backend) *Player {
+	return &Player{volume: 0.8, backend: backend}
 }
 
 // SetSongs replaces the song list without touching audio — for tests.
@@ -152,10 +154,10 @@ func (p *Player) LoadPlaylist(entries []playlist.Entry) {
 	p.mu.Lock()
 	p.songs = songs
 	p.index = 0
-	if p.stream != 0 {
+	if p.stream != nil {
 		p.stream.Stop()
 		p.stream.Free()
-		p.stream = 0
+		p.stream = nil
 		p.state = StateStopped
 	}
 	p.mu.Unlock()
@@ -182,6 +184,37 @@ func (p *Player) UpdateSongTags(index int, title, artist string) {
 			p.songs[index].Author = artist
 		}
 	}
+}
+
+// RemoveSong removes the song at the given index from the queue.
+// If it is the currently playing track, playback is stopped first.
+// The index is adjusted so it stays in bounds after removal.
+// Returns the path of the removed song (empty string if not downloaded).
+func (p *Player) RemoveSong(index int) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if index < 0 || index >= len(p.songs) {
+		return ""
+	}
+	removedPath := p.songs[index].Path
+
+	// Stop playback if we're removing the active track.
+	if index == p.index && p.stream != nil {
+		p.stream.Stop()
+		p.stream.Free()
+		p.stream = nil
+		p.state = StateStopped
+	}
+
+	// Splice out the song.
+	p.songs = append(p.songs[:index], p.songs[index+1:]...)
+
+	// Keep p.index in bounds.
+	if p.index >= len(p.songs) && p.index > 0 {
+		p.index = len(p.songs) - 1
+	}
+
+	return removedPath
 }
 
 // Songs returns a snapshot of the song list.
@@ -211,7 +244,7 @@ func (p *Player) State() State {
 func (p *Player) Play() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.state == StatePaused && p.stream != 0 {
+	if p.state == StatePaused && p.stream != nil {
 		if err := p.stream.Play(false); err != nil {
 			return err
 		}
@@ -234,10 +267,10 @@ func (p *Player) PlayIndex(i int) error {
 
 // openAndPlay opens and starts playback. Must be called with lock held.
 func (p *Player) openAndPlay(i int) error {
-	if p.stream != 0 {
+	if p.stream != nil {
 		p.stream.Stop()
 		p.stream.Free()
-		p.stream = 0
+		p.stream = nil
 	}
 	if len(p.songs) == 0 {
 		jlog.Info("openAndPlay: no songs in queue")
@@ -249,8 +282,17 @@ func (p *Player) openAndPlay(i int) error {
 		return nil // song not available locally yet
 	}
 	jlog.Infof("openAndPlay: opening index=%d path=%q", i, p.songs[i].Path)
-	s, err := audio.OpenFile(p.songs[i].Path)
+	s, err := p.backend.OpenFile(p.songs[i].Path)
 	if err != nil {
+		if err == audio.ErrUnsupportedFormat {
+			jlog.Infof("openAndPlay: unsupported format index=%d path=%q — skipping", i, p.songs[i].Path)
+			p.state = StateStopped
+			// Unlock so Next() can re-acquire.
+			p.mu.Unlock()
+			_ = p.Next()
+			p.mu.Lock()
+			return nil
+		}
 		jlog.Errorf("openAndPlay: OpenFile failed index=%d path=%q: %v", i, p.songs[i].Path, err)
 		return err
 	}
@@ -287,7 +329,7 @@ func (p *Player) openAndPlay(i int) error {
 func (p *Player) Pause() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.stream == 0 {
+	if p.stream == nil {
 		return nil
 	}
 	if p.state == StatePlaying {
@@ -308,10 +350,10 @@ func (p *Player) Pause() error {
 func (p *Player) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.stream != 0 {
+	if p.stream != nil {
 		p.stream.Stop()
 		p.stream.Free()
-		p.stream = 0
+		p.stream = nil
 	}
 	p.state = StateStopped
 	if p.OnStop != nil {
@@ -351,7 +393,7 @@ func (p *Player) Prev() error {
 func (p *Player) SeekForward(d float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.stream == 0 {
+	if p.stream == nil {
 		return
 	}
 	pos := p.stream.Position() + d
@@ -366,7 +408,7 @@ func (p *Player) SeekForward(d float64) {
 func (p *Player) SeekBackward(d float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.stream == 0 {
+	if p.stream == nil {
 		return
 	}
 	pos := p.stream.Position() - d
@@ -387,7 +429,7 @@ func (p *Player) SetVolume(v float32) {
 		v = 1
 	}
 	p.volume = v
-	if p.stream != 0 {
+	if p.stream != nil {
 		p.stream.SetVolume(v)
 	}
 }
@@ -403,10 +445,21 @@ func (p *Player) Volume() float32 {
 func (p *Player) Progress() (float64, float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.stream == 0 {
+	if p.stream == nil {
 		return 0, 0
 	}
 	return p.stream.Position(), p.stream.Duration()
+}
+
+// FFTData returns frequency magnitude data from the currently playing stream.
+// Returns nil when no stream is active or the backend does not support FFT.
+func (p *Player) FFTData() []float32 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stream == nil {
+		return nil
+	}
+	return p.stream.FFTData()
 }
 
 // WatchEnd polls for track end and auto-advances. Call in a goroutine.
@@ -414,7 +467,7 @@ func (p *Player) WatchEnd() {
 	for {
 		time.Sleep(500 * time.Millisecond)
 		p.mu.Lock()
-		if p.state == StatePlaying && p.stream != 0 {
+		if p.state == StatePlaying && p.stream != nil {
 			if p.stream.IsActive() == audio.ActiveStopped {
 				p.mu.Unlock()
 				_ = p.Next()

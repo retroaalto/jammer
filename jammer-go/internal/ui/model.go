@@ -22,6 +22,7 @@ import (
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 type tickMsg time.Time
+type vizTickMsg time.Time
 
 type downloadProgressMsg struct {
 	index      int
@@ -132,6 +133,11 @@ type Model struct {
 	dlStates    map[int]*dlState
 	plsFile     string // absolute path of currently loaded playlist (empty = songs dir)
 
+	// visualizer
+	vizBars    []float64 // current smoothed bar heights (0.0–1.0)
+	vizTargets []float64 // FFT target heights bars animate toward
+	vizRunning bool      // true while the 100ms viz tick is scheduled
+
 	// playlists view
 	playlists []string // filenames (basename only) in plsDir
 	pcursor   int
@@ -179,6 +185,12 @@ func tick() tea.Cmd {
 	})
 }
 
+func vizTick() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return vizTickMsg(t)
+	})
+}
+
 func (m Model) Init() tea.Cmd {
 	if m.autoPlay && len(m.songs) > 0 {
 		return tea.Batch(tick(), func() tea.Msg {
@@ -186,7 +198,7 @@ func (m Model) Init() tea.Cmd {
 				jlog.Errorf("auto-play on start: %v", err)
 			}
 			return nil
-		}, m.downloadIfNeeded(0))
+		}, m.downloadIfNeeded(0), m.startViz(0))
 	}
 	return tick()
 }
@@ -283,11 +295,110 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case vizTickMsg:
+		if m.p.State() == player.StatePlaying {
+			nBars := m.vizNBars()
+			m.stepViz(nBars)
+			return m, vizTick()
+		}
+		// Player stopped/paused — let the tick lapse; will be restarted on next play.
+		m.vizRunning = false
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
 	return m, nil
+}
+
+// startViz initialises the viz state and fires the first vizTick if not already running.
+func (m *Model) startViz(nBars int) tea.Cmd {
+	if nBars < 1 {
+		nBars = m.vizNBars()
+	}
+	if nBars < 1 {
+		nBars = 20
+	}
+	if len(m.vizBars) != nBars {
+		m.vizBars = make([]float64, nBars)
+		m.vizTargets = make([]float64, nBars)
+	}
+	if m.vizRunning {
+		return nil
+	}
+	m.vizRunning = true
+	return vizTick()
+}
+
+// vizNBars returns the number of visualizer bars for the current terminal width.
+// Returns 0 if the terminal is too narrow to show a viz.
+func (m Model) vizNBars() int {
+	if m.width <= 50 {
+		return 0
+	}
+	n := (m.width - 40) / 3
+	if n > 20 {
+		n = 20
+	}
+	if n < 4 {
+		return 0
+	}
+	return n
+}
+
+func (m *Model) stepViz(nBars int) {
+	fft := m.p.FFTData() // 256 bins, or nil
+	if fft == nil || nBars < 1 {
+		// No data: decay bars toward zero.
+		for i := range m.vizBars {
+			m.vizBars[i] *= 0.7
+		}
+		return
+	}
+
+	// Ensure slices are the right size.
+	if len(m.vizBars) != nBars {
+		m.vizBars = make([]float64, nBars)
+		m.vizTargets = make([]float64, nBars)
+	}
+
+	// Map FFT bins into nBars groups.
+	// With a 512-point FFT at 44100 Hz, each bin covers ~86 Hz.
+	// We use bins 1..nBars*2 (skipping DC bin 0), giving each bar exactly 2 bins,
+	// covering roughly 172–3440 Hz where most musical content sits.
+	start := 1 // skip DC (bin 0)
+	for i := 0; i < nBars; i++ {
+		lo := start + i*2
+		hi := lo + 2
+		if hi > len(fft) {
+			hi = len(fft)
+		}
+		if lo >= len(fft) {
+			break
+		}
+		var sum float32
+		for _, v := range fft[lo:hi] {
+			sum += v
+		}
+		avg := float64(sum) / float64(hi-lo)
+		// Sqrt compresses the wide dynamic range of FFT magnitudes into something
+		// visually natural, then scale up so typical music fills the bar height.
+		avg = math.Sqrt(avg) * 3
+		if avg > 1 {
+			avg = 1
+		}
+		m.vizTargets[i] = avg
+	}
+
+	// Smooth bars toward targets: fast attack (0.6), slower decay (0.3).
+	for i := range m.vizBars {
+		delta := m.vizTargets[i] - m.vizBars[i]
+		if delta > 0 {
+			m.vizBars[i] += delta * 0.6
+		} else {
+			m.vizBars[i] += delta * 0.3
+		}
+	}
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -361,6 +472,10 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if err := m.p.Pause(); err != nil {
 				jlog.Errorf("ui: pause failed: %v", err)
 			}
+			// Pause() toggles: if we just unpaused, restart the viz tick.
+			if m.p.State() == player.StatePlaying {
+				return m, m.startViz(0)
+			}
 		} else {
 			jlog.Infof("ui: play song index=%d title=%q", m.scursor, m.songs[m.scursor].DisplayTitle())
 			if err := m.p.PlayIndex(m.scursor); err != nil {
@@ -369,7 +484,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.playing = m.scursor
 			m.prevPlaying = m.scursor
 			// Download if the song isn't local yet.
-			return m, m.downloadIfNeeded(m.scursor)
+			return m, tea.Batch(m.downloadIfNeeded(m.scursor), m.startViz(0))
 		}
 	case "s":
 		jlog.Infof("ui: stop")
@@ -387,7 +502,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.scursor = m.playing
 		m.clampSongScroll()
 		jlog.Infof("ui: next → index=%d", m.playing)
-		return m, m.downloadIfNeeded(m.playing)
+		return m, tea.Batch(m.downloadIfNeeded(m.playing), m.startViz(0))
 	case "p":
 		if ds := m.dlStates[m.playing]; ds != nil && ds.active {
 			jlog.Infof("ui: prev blocked — download active for index=%d", m.playing)
@@ -401,7 +516,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.scursor = m.playing
 		m.clampSongScroll()
 		jlog.Infof("ui: prev → index=%d", m.playing)
-		return m, m.downloadIfNeeded(m.playing)
+		return m, tea.Batch(m.downloadIfNeeded(m.playing), m.startViz(0))
 	case "right", "l":
 		m.p.SeekForward(float64(m.seekStep))
 		jlog.Infof("ui: seek +%ds", m.seekStep)
@@ -427,7 +542,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.prevPlaying = idx
 		m.scursor = idx
 		m.clampSongScroll()
-		return m, m.downloadIfNeeded(idx)
+		return m, tea.Batch(m.downloadIfNeeded(idx), m.startViz(0))
 	case "d":
 		jlog.Infof("ui: download requested index=%d url=%q", m.scursor, m.songs[m.scursor].URL)
 		return m, m.startDownload(m.scursor)
@@ -841,8 +956,43 @@ func (m Model) renderPlaylists() string {
 
 // ── Progress bars ─────────────────────────────────────────────────────────────
 
+// vizString renders the current viz bars as a string (empty when not playing).
+func (m Model) vizString(nBars int) string {
+	if m.p.State() != player.StatePlaying || len(m.vizBars) == 0 {
+		return ""
+	}
+	const blocks = " ▁▂▃▄▅▆▇█"
+	runes := []rune(blocks)
+	var sb strings.Builder
+	bars := m.vizBars
+	if len(bars) > nBars {
+		bars = bars[:nBars]
+	}
+	for _, h := range bars {
+		idx := int(h * float64(len(runes)-1))
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(runes) {
+			idx = len(runes) - 1
+		}
+		sb.WriteRune(runes[idx])
+	}
+	return styleBarFill.Render(sb.String())
+}
+
 func (m Model) progressBar() string {
-	barW := m.width - 20
+	nBars := 0
+	if m.p.State() == player.StatePlaying {
+		nBars = m.vizNBars()
+	}
+
+	vizReserve := 0
+	if nBars > 0 {
+		vizReserve = nBars + 2
+	}
+
+	barW := m.width - 20 - vizReserve
 	if barW < 10 {
 		barW = 10
 	}
@@ -856,7 +1006,12 @@ func (m Model) progressBar() string {
 	}
 	bar := styleBarFill.Render(strings.Repeat("━", filled)) +
 		styleBar.Render(strings.Repeat("─", barW-filled))
-	return fmt.Sprintf("%s %s %s", fmtTime(m.pos), bar, fmtTime(m.dur))
+
+	line := fmt.Sprintf("%s %s %s", fmtTime(m.pos), bar, fmtTime(m.dur))
+	if nBars > 0 {
+		line += "  " + m.vizString(nBars)
+	}
+	return line
 }
 
 func (m Model) volumeBar() string {
