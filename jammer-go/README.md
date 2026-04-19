@@ -2,6 +2,8 @@
 
 A terminal music player (TUI) written in Go. Play local files, stream and download tracks from YouTube and SoundCloud on demand, and manage playlists — all from the keyboard.
 
+![jammer-go UI](jammer-go-ui-1.png)
+
 ---
 
 ## Features

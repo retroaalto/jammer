@@ -90,6 +90,7 @@ func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimPrefix(line, "\uFEFF") // strip UTF-8 BOM if present
 		if line == "" {
 			continue
 		}
@@ -100,7 +101,7 @@ func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 			// ── New JSONL format ──────────────────────────────────────────
 			var je jsonlEntry
 			if err := json.Unmarshal([]byte(line), &je); err == nil {
-				e.URL = je.URL
+				e.URL = stripBOM(je.URL)
 				e.Title = je.Title
 				e.Author = je.Author
 				if je.Path != "" {
@@ -116,7 +117,7 @@ func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 			if idx := strings.Index(line, delim); idx >= 0 {
 				rawURL := line[:idx]
 				metaJSON := line[idx+len(delim):]
-				e.URL = strings.TrimSuffix(rawURL, "?")
+				e.URL = stripBOM(strings.TrimSuffix(rawURL, "?"))
 
 				if metaJSON != "" && metaJSON != "{}" {
 					var old struct {
@@ -128,13 +129,13 @@ func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 						e.Author = old.Author
 					}
 				}
+		} else {
+			if isURL(line) {
+				e.URL = stripBOM(line)
 			} else {
-				if isURL(line) {
-					e.URL = line
-				} else {
-					e.Path = line
-				}
+				e.Path = line
 			}
+		}
 		}
 
 		if e.URL != "" && e.Path == "" {
@@ -164,6 +165,7 @@ func LoadM3U(path, songsDir string) ([]Entry, error) {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimPrefix(line, "\uFEFF") // strip UTF-8 BOM if present
 		if line == "" || line == "#EXTM3U" {
 			continue
 		}
@@ -185,8 +187,8 @@ func LoadM3U(path, songsDir string) ([]Entry, error) {
 			continue
 		}
 		if isURL(line) {
-			pending.URL = line
-			pending.Path = resolveLocalPath(line, songsDir)
+			pending.URL = stripBOM(line)
+			pending.Path = resolveLocalPath(stripBOM(line), songsDir)
 		} else {
 			pending.Path = line
 		}
@@ -194,6 +196,11 @@ func LoadM3U(path, songsDir string) ([]Entry, error) {
 		pending = Entry{}
 	}
 	return entries, scanner.Err()
+}
+
+// stripBOM removes a leading UTF-8 Byte Order Mark from s if present.
+func stripBOM(s string) string {
+	return strings.TrimPrefix(s, "\uFEFF")
 }
 
 // isURL returns true if s looks like an http/https URL.
