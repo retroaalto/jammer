@@ -151,6 +151,10 @@ type Model struct {
 	// legacy convert prompt
 	convertFile    string           // path of legacy playlist pending conversion
 	convertEntries []playlist.Entry // parsed entries from the legacy file
+
+	// error display
+	lastError   string    // most recent download error message (empty = none)
+	lastErrTime time.Time // when lastError was set; cleared after 8 s by tickMsg
 }
 
 func New(p *player.Player, songsDir, plsDir string, seekStep int) Model {
@@ -228,8 +232,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			jlog.Infof("tick: track changed %d → %d", m.prevPlaying, newIdx)
 			m.prevPlaying = newIdx
 			m.playing = newIdx
+			// Keep the cursor and scroll in sync so the playing song is always visible.
+			m.scursor = newIdx
+			m.clampSongScroll()
 		}
 		m.playing = newIdx
+		// Clear stale error message after 8 seconds.
+		if m.lastError != "" && time.Since(m.lastErrTime) >= 8*time.Second {
+			m.lastError = ""
+		}
 		// Always check whether the current song needs downloading — this is the
 		// sole trigger for n/p navigation so rapid key-holds don't pile up downloads.
 		return m, tea.Batch(tick(), m.downloadIfNeeded(newIdx))
@@ -252,6 +263,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ds.err = msg.err
 			ds.frac = 0
 			jlog.Errorf("download failed index=%d: %v", msg.index, msg.err)
+			m.lastError = msg.err.Error()
+			m.lastErrTime = time.Now()
 			// Skip to the next song if this was the currently playing track.
 			if msg.index == m.playing {
 				jlog.Infof("download failed for playing track — skipping to next index=%d", msg.index)
@@ -577,6 +590,9 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.scursor = idx
 		m.clampSongScroll()
 		return m, tea.Batch(m.downloadIfNeeded(idx), m.startViz(0))
+	case "R":
+		m.p.SetShuffle(!m.p.IsShuffle())
+		jlog.Infof("ui: shuffle → %v", m.p.IsShuffle())
 	case "d":
 		_, realIdx := m.filterSong(m.scursor)
 		jlog.Infof("ui: download requested index=%d url=%q", realIdx, m.songs[realIdx].URL)
@@ -1067,9 +1083,17 @@ func (m Model) renderSongs() string {
 	vol := int(math.Round(float64(m.p.Volume()) * 100))
 	loopLabels := [3]string{"loop:all", "loop:off", "loop:one"}
 	loopLabel := loopLabels[int(m.p.GetLoopMode())%3]
-	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s   %s", vol, m.volumeBar(), loopLabel)) + "\n\n")
+	shuffleLabel := ""
+	if m.p.IsShuffle() {
+		shuffleLabel = "   shuffle"
+	}
+	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s   %s%s", vol, m.volumeBar(), loopLabel, shuffleLabel)) + "\n\n")
 
-	b.WriteString(styleHelp.Render(" space/enter: play/pause  s: stop  n: next  p: prev  r: random  d: download") + "\n")
+	if m.lastError != "" {
+		errMsg := truncate("! "+m.lastError, m.width-3)
+		b.WriteString(styleErr.Render(" "+errMsg) + "\n")
+	}
+	b.WriteString(styleHelp.Render(" space/enter: play/pause  s: stop  n: next  p: prev  r: random  R: shuffle  d: download") + "\n")
 	b.WriteString(styleHelp.Render(fmt.Sprintf(" /: filter  ←/→: seek %ds  +/-: vol  L: loop  del: remove  S+del: +file  tab: playlists  q: quit", m.seekStep)) + "\n")
 	return b.String()
 }

@@ -1,6 +1,7 @@
 package player
 
 import (
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,7 @@ type Player struct {
 	backend  audio.Backend
 	volume   float32
 	loopMode LoopMode
+	shuffle  bool
 
 	OnTrackChange func(index int)
 	OnStop        func()
@@ -372,6 +374,7 @@ func (p *Player) Stop() {
 }
 
 // Next advances to the next track and plays it if it is available locally.
+// When shuffle is enabled the next track is chosen at random (never the same index).
 // The index always moves regardless of download status.
 func (p *Player) Next() error {
 	p.mu.Lock()
@@ -380,7 +383,15 @@ func (p *Player) Next() error {
 		p.mu.Unlock()
 		return nil
 	}
-	next := (p.index + 1) % total
+	var next int
+	if p.shuffle && total > 1 {
+		next = rand.Intn(total - 1)
+		if next >= p.index {
+			next++
+		}
+	} else {
+		next = (p.index + 1) % total
+	}
 	p.mu.Unlock()
 	return p.PlayIndex(next)
 }
@@ -484,6 +495,21 @@ func (p *Player) GetLoopMode() LoopMode {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.loopMode
+}
+
+// SetShuffle enables or disables shuffle mode.
+// When enabled, Next() picks a random track instead of the sequential one.
+func (p *Player) SetShuffle(on bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.shuffle = on
+}
+
+// IsShuffle reports whether shuffle mode is currently enabled.
+func (p *Player) IsShuffle() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.shuffle
 }
 
 // WatchEnd polls for track end and auto-advances. Call in a goroutine.

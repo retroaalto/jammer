@@ -13,7 +13,7 @@ A terminal music player (TUI) written in Go. Play local files, stream and downlo
 - Automatic legacy playlist conversion prompt
 - Per-song download progress shown inline
 - Metadata (title/artist) enriched from downloader and ID3/Vorbis tags, written back to playlist
-- Configurable seek step and skip debounce via `settings.json`
+- Configurable seek step via `settings.json`
 
 ---
 
@@ -77,8 +77,7 @@ Both `songs/` and `playlists/` are created automatically on first launch.
 ```json
 {
   "backEndType": 0,
-  "seekStep": 2,
-  "skipCooldown": 200
+  "seekStep": 2
 }
 ```
 
@@ -86,7 +85,6 @@ Both `songs/` and `playlists/` are created automatically on first launch.
 |---|---|---|---|
 | `backEndType` | int | `0` | Audio backend: `0` = beep (pure Go), `1` = BASS |
 | `seekStep` | int | `2` | Seconds to seek per `←`/`→` keypress |
-| `skipCooldown` | int | `200` | Minimum ms between `n`/`p` skips when holding the key |
 
 Missing or zero values fall back to the defaults listed above. Unknown fields are preserved verbatim. BOM-prefixed UTF-8 files are handled transparently.
 
@@ -102,13 +100,14 @@ Missing or zero values fall back to the defaults listed above. Unknown fields ar
 | `↓` / `j` | Move cursor down |
 | `Space` / `Enter` | Play selected song; pause/resume if it is already playing |
 | `s` | Stop playback |
-| `n` | Next track (debounced by `skipCooldown`; blocked while a download is active) |
-| `p` | Previous track (same rules as `n`) |
+| `n` | Next track (blocked while a download is active) |
+| `p` | Previous track (blocked while a download is active) |
 | `→` / `l` | Seek forward by `seekStep` seconds |
 | `←` / `h` | Seek backward by `seekStep` seconds |
 | `+` / `=` | Volume up 5% |
 | `-` | Volume down 5% |
-| `r` | Play a random song |
+| `r` | Play a random song (one-shot) |
+| `R` | Toggle shuffle mode (auto-advance picks a random track) |
 | `d` | Download the selected song |
 | `Delete` | Remove selected song from the queue (file kept) |
 | `Shift+Delete` | Remove selected song from the queue **and delete the local file** |
