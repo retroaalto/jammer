@@ -43,14 +43,55 @@ func TestWriteAndRead(t *testing.T) {
 	}
 }
 
-func TestWrite_NonMp3_IsSkipped(t *testing.T) {
+// minimalOGG is a minimal valid OGG Vorbis file containing three header pages
+// (identification, comment, setup) with no audio frames — enough for the OGG
+// tag writer to locate and patch the Vorbis Comment header.
+var minimalOGG = []byte{
+	// Page 0 — identification header
+	79, 103, 103, 83, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+	234, 48, 134, 170, 1, 30, 1, 118, 111, 114, 98, 105, 115, 0, 0, 0, 0, 1,
+	68, 172, 0, 0, 0, 0, 0, 0, 128, 181, 1, 0, 0, 0, 0, 0, 184, 1,
+	// Page 1 — comment header (vendor "jammer-test", 0 comments)
+	79, 103, 103, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
+	27, 207, 3, 228, 1, 27, 3, 118, 111, 114, 98, 105, 115, 11, 0, 0, 0, 106,
+	97, 109, 109, 101, 114, 45, 116, 101, 115, 116, 0, 0, 0, 0, 1,
+	// Page 2 — setup header (minimal stub)
+	79, 103, 103, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0,
+	173, 71, 25, 19, 1, 8, 5, 118, 111, 114, 98, 105, 115, 1,
+}
+
+func TestWriteOGG(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.ogg")
-	if err := os.WriteFile(path, []byte("fake ogg"), 0644); err != nil {
+	if err := os.WriteFile(path, minimalOGG, 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Should not error — ogg files are silently skipped.
+
+	if err := tags.Write(path, "OGG Title", "OGG Artist"); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	// Read back with dhowden/tag to verify the tags landed.
+	info, err := tags.Read(path)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if info.Title != "OGG Title" {
+		t.Errorf("Title = %q, want %q", info.Title, "OGG Title")
+	}
+	if info.Artist != "OGG Artist" {
+		t.Errorf("Artist = %q, want %q", info.Artist, "OGG Artist")
+	}
+}
+
+func TestWrite_UnknownExt_IsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.wav")
+	if err := os.WriteFile(path, []byte("fake wav data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Unknown/unsupported extensions should be silently skipped.
 	if err := tags.Write(path, "Title", "Artist"); err != nil {
-		t.Errorf("Write on .ogg should be a no-op, got: %v", err)
+		t.Errorf("Write on .wav should be a no-op, got: %v", err)
 	}
 }

@@ -3,6 +3,7 @@ package tags
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	id3 "github.com/bogem/id3v2/v2"
@@ -43,22 +44,29 @@ func Read(path string) (Info, error) {
 	}, nil
 }
 
-// Write embeds ID3v2 title and artist tags into an mp3 file at path.
-// Non-mp3 files are silently skipped (no error).
+// Write embeds title and artist metadata into an audio file at path.
+// Supported formats: .mp3 (ID3v2), .ogg/.oga (Vorbis Comment), .flac (Vorbis Comment).
+// Other formats are silently skipped (no error).
 func Write(path, title, artist string) error {
-	if !strings.HasSuffix(strings.ToLower(path), ".mp3") {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mp3":
+		t, err := id3.Open(path, id3.Options{Parse: true})
+		if err != nil {
+			return err
+		}
+		defer t.Close()
+		if title != "" {
+			t.SetTitle(title)
+		}
+		if artist != "" {
+			t.SetArtist(artist)
+		}
+		return t.Save()
+	case ".ogg", ".oga":
+		return writeOGG(path, title, artist)
+	case ".flac":
+		return writeFLAC(path, title, artist)
+	default:
 		return nil
 	}
-	t, err := id3.Open(path, id3.Options{Parse: true})
-	if err != nil {
-		return err
-	}
-	defer t.Close()
-	if title != "" {
-		t.SetTitle(title)
-	}
-	if artist != "" {
-		t.SetArtist(artist)
-	}
-	return t.Save()
 }

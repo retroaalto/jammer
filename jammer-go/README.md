@@ -7,13 +7,21 @@ A terminal music player (TUI) written in Go. Play local files, stream and downlo
 ## Features
 
 - Keyboard-driven TUI built with Bubbletea
-- On-demand download from YouTube and SoundCloud (no manual `yt-dlp` invocation needed)
+- On-demand download from YouTube and SoundCloud — no manual `yt-dlp` invocation needed
 - Two audio backends: pure-Go **beep** (default, no external libs) or **BASS** (wider format support)
 - Playlist browser with JSONL `.jammer`, legacy `?|`, M3U and M3U8 support
 - Automatic legacy playlist conversion prompt
-- Per-song download progress shown inline
-- Metadata (title/artist) enriched from downloader and ID3/Vorbis tags, written back to playlist
+- Per-song download progress shown inline (`[42%]` → `[ok]` / `[err]`)
+- Metadata (title/artist) enriched from downloader and embedded file tags, then written back:
+  - **MP3** — ID3v2 via `bogem/id3v2`
+  - **OGG / OGA** — Vorbis Comment rewriter (custom pure-Go OGG page parser)
+  - **FLAC** — Vorbis Comment block patched via `go-flac` + `flacvorbis`
+- Audio visualiser (spectrum bars) rendered in the progress bar while playing
+- Loop modes: all / off / one — cycle with `L`
+- Shuffle mode — toggle with `R`; one-shot random jump with `r`
+- Song filter / search with `/`
 - Configurable seek step via `settings.json`
+- Error bar shown on download failure, auto-cleared after 8 s
 
 ---
 
@@ -77,7 +85,8 @@ Both `songs/` and `playlists/` are created automatically on first launch.
 ```json
 {
   "backEndType": 0,
-  "seekStep": 2
+  "seekStep": 2,
+  "LoopType": 0
 }
 ```
 
@@ -85,6 +94,7 @@ Both `songs/` and `playlists/` are created automatically on first launch.
 |---|---|---|---|
 | `backEndType` | int | `0` | Audio backend: `0` = beep (pure Go), `1` = BASS |
 | `seekStep` | int | `2` | Seconds to seek per `←`/`→` keypress |
+| `LoopType` | int | `0` | Loop mode on startup: `0` = loop all, `1` = loop off, `2` = loop one |
 
 Missing or zero values fall back to the defaults listed above. Unknown fields are preserved verbatim. BOM-prefixed UTF-8 files are handled transparently.
 
@@ -100,16 +110,19 @@ Missing or zero values fall back to the defaults listed above. Unknown fields ar
 | `↓` / `j` | Move cursor down |
 | `Space` / `Enter` | Play selected song; pause/resume if it is already playing |
 | `s` | Stop playback |
-| `n` | Next track (blocked while a download is active) |
-| `p` | Previous track (blocked while a download is active) |
+| `n` | Next track |
+| `p` | Previous track |
 | `→` / `l` | Seek forward by `seekStep` seconds |
 | `←` / `h` | Seek backward by `seekStep` seconds |
 | `+` / `=` | Volume up 5% |
 | `-` | Volume down 5% |
-| `r` | Play a random song (one-shot) |
-| `R` | Toggle shuffle mode (auto-advance picks a random track) |
-| `d` | Download the selected song |
-| `Delete` | Remove selected song from the queue (file kept) |
+| `r` | Jump to a random song (one-shot, does not change loop/shuffle mode) |
+| `R` | Toggle shuffle mode (auto-advance picks a random track each time) |
+| `L` | Cycle loop mode: loop all → loop off → loop one |
+| `d` | Download the selected song (force re-download even if file exists) |
+| `/` | Open filter prompt — type to narrow the song list |
+| `Escape` | Clear active filter |
+| `Delete` | Remove selected song from the queue (local file kept) |
 | `Shift+Delete` | Remove selected song from the queue **and delete the local file** |
 | `Tab` | Switch to Playlists view |
 | `q` / `Ctrl+C` | Quit |
@@ -203,9 +216,12 @@ Download progress is shown inline next to the song title: `[42%]` → `[ok]` / `
 
 After a successful download:
 - The local path is updated in the queue
-- ID3v2 tags are written to MP3 files
 - Title/author are enriched from the downloader metadata or embedded file tags
-- The playlist file is saved with the updated metadata
+- Tags are written back to the audio file:
+  - `.mp3` → ID3v2
+  - `.ogg` / `.oga` → Vorbis Comment (pure-Go OGG page rewriter)
+  - `.flac` → Vorbis Comment block patched via `go-flac`
+- The playlist file is saved with the updated title/author metadata
 - Playback starts automatically if the player was waiting
 
 ---
