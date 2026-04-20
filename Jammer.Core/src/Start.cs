@@ -45,6 +45,12 @@ namespace Jammer
         public static bool LoopRunning = true;
         private static bool _keyboardBusy = false;
 
+        // Tracks when we last polled the terminal dimensions for resize detection.
+        // Console.WindowWidth/Height are syscalls; polling them every 1ms loop iteration
+        // at ~1000Hz is wasteful. We check at most once every 500ms instead.
+        private static long _lastResizeCheckTick = 0;
+        private const long ResizeCheckIntervalMs = 500;
+
         //
         // Run
         //
@@ -154,7 +160,13 @@ namespace Jammer
 
             while (LoopRunning)
             {
-                AnsiConsole.Cursor.Hide();
+                // NOTE: Cursor.Hide() must NOT be called here every iteration.
+                // AnsiConsole.Cursor.Hide() emits an ANSI escape sequence (ESC[?25l) to stdout
+                // on every call. With Thread.Sleep(1) the loop runs ~1000 times/second, which
+                // generates ~1000 unnecessary terminal writes/second. The cursor was already
+                // hidden once before the loop begins (line above) and Message helpers restore
+                // it temporarily when needed, so no continuous re-hiding is required.
+
                 if (Utils.Songs.Length != 0)
                 {
                     // if the first song is "" then there are more songs
@@ -166,12 +178,21 @@ namespace Jammer
                     }
                 }
 
-                if (consoleWidth != Console.WindowWidth || consoleHeight != Console.WindowHeight)
+                // Console.WindowWidth and Console.WindowHeight are syscalls. Polling them on
+                // every 1ms loop iteration produces ~1000 syscalls/second with zero benefit —
+                // terminal resizes happen at human speed (order of seconds). We throttle to
+                // a check every 500ms using Environment.TickCount64.
+                long nowTick = Environment.TickCount64;
+                if (nowTick - _lastResizeCheckTick >= ResizeCheckIntervalMs)
                 {
-                    consoleHeight = Console.WindowHeight;
-                    consoleWidth = Console.WindowWidth;
-                    AnsiConsole.Clear();
-                    drawWhole = true;
+                    _lastResizeCheckTick = nowTick;
+                    if (consoleWidth != Console.WindowWidth || consoleHeight != Console.WindowHeight)
+                    {
+                        consoleHeight = Console.WindowHeight;
+                        consoleWidth = Console.WindowWidth;
+                        AnsiConsole.Clear();
+                        drawWhole = true;
+                    }
                 }
 
                 switch (state)

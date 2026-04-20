@@ -157,3 +157,6 @@ nsis/*.ico
 
 .vs/
 
+jammer-trace-*.nettrace
+jammer-trace-*.json
+jammer-trace-*.speedscope.json
