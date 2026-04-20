@@ -29,6 +29,7 @@ namespace Jammer
 
         // RSS auto-skip timer tracking
         private static DateTime? rssStartTime = null;
+        private static int _endSyncHandle = 0;
 
         public static bool isValidExtension(string checkingExt, string[] exts)
         {
@@ -925,7 +926,9 @@ namespace Jammer
             SetFXs();
 
             // set sync
-            Bass.ChannelSetSync(Utils.CurrentMusic, SyncFlags.End, 0, (a, b, c, d) =>
+            if (_endSyncHandle != 0)
+                Bass.ChannelRemoveSync(Utils.CurrentMusic, _endSyncHandle);
+            _endSyncHandle = Bass.ChannelSetSync(Utils.CurrentMusic, SyncFlags.End, 0, (a, b, c, d) =>
             {
                 MaybeNextSong();
                 Start.drawWhole = true;

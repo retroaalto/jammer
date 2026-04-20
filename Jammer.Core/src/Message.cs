@@ -301,7 +301,11 @@ namespace Jammer
                 string input = JRead.JRead.Read(inputSaying, options);
                 if (!string.IsNullOrEmpty(input)) // Only add non-empty input to history
                                                   // ReadLine.AddHistory(input);
+                {
                     JRead.JRead.History.Add(input);
+                    if (JRead.JRead.History.Count > 500)
+                        JRead.JRead.History.RemoveAt(0);
+                }
 
                 Start.Sanitize(input, true);
                 return input;

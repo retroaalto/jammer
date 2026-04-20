@@ -11,7 +11,7 @@ namespace Jammer
     {
         public static string FileContent = @"[Audio Visualizer]
 ; Refresh time in milliseconds
-RefreshTime = 35
+RefreshTime = 50
 ; Buffer size for FFT data
 ; meaning higher values will detect more frequencies,
 BufferSize = 41000
@@ -36,7 +36,7 @@ PausingEffect = true
 ";
 
 
-        public static int refreshTime = 10; // Visualizer enabled flag
+        public static int refreshTime = 50; // Visualizer refresh interval in ms (~20fps)
         public static int bufferSize = 41000; // FFT data buffer size
         public static string dataFlags = "FFT4098"; // FFT data flags
         public static int minFrequency = 50; // Minimum frequency
@@ -46,6 +46,7 @@ PausingEffect = true
         public static bool pausingEffect = true; // Pausing effect flag
 
         private static float scaleFactor = 1.0f;
+        private static float[] _fftBuffer = new float[bufferSize];
         public static string GetSongVisual(int length, bool isPlaying)
         {
             // If the song is not playing, gradually decrease the scale factor
@@ -59,7 +60,9 @@ PausingEffect = true
             }
 
             int _bufferSize = bufferSize; // FFT data buffer size
-            var fftData = new float[_bufferSize]; // FFT data buffer
+            if (_fftBuffer.Length != _bufferSize)
+                _fftBuffer = new float[_bufferSize];
+            var fftData = _fftBuffer; // reuse static buffer (single-threaded)
 
             // Retrieve FFT data from current music channel
             int bytesRead = Bass.ChannelGetData(Utils.CurrentMusic, fftData, (int)GetFFTDataFlags());

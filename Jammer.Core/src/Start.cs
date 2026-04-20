@@ -43,6 +43,7 @@ namespace Jammer
         public static double treshhold = 1;
         public static double prevMusicTimePlayed = 0;
         public static bool LoopRunning = true;
+        private static bool _keyboardBusy = false;
 
         //
         // Run
@@ -80,6 +81,7 @@ namespace Jammer
 
         public static void StartUp()
         {
+            AnsiConsole.Profile.Encoding = System.Text.Encoding.UTF8;
             try
             {
                 if (!Bass.Init())
@@ -176,7 +178,11 @@ namespace Jammer
                 {
                     case MainStates.idle:
                         // TUI.ClearScreen();
-                        _ = CheckKeyboardAsync();
+                        if (!_keyboardBusy)
+                        {
+                            _keyboardBusy = true;
+                            _ = CheckKeyboardAsync();
+                        }
                         break;
 
                     case MainStates.play:
@@ -221,7 +227,11 @@ namespace Jammer
 
                         if (debug)
                             Message.Data("asd", "asd");
-                        _ = CheckKeyboardAsync();
+                        if (!_keyboardBusy)
+                        {
+                            _keyboardBusy = true;
+                            _ = CheckKeyboardAsync();
+                        }
                         break;
 
                     case MainStates.pause:
@@ -322,7 +332,7 @@ namespace Jammer
         static bool canVisualize = false;
         private static void EqualizerLoop()
         {
-            while (true)
+            while (LoopRunning)
             {
                 if (Preferences.isVisualizer)
                 {

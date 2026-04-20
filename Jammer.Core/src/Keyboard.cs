@@ -12,8 +12,11 @@ namespace Jammer
     {
         public static string Action = "";
         public static string playerView = "default"; // default, all, help, settings, fake, editkeybindings, changelanguage
+        private static TaskPoolGlobalHook? _hook = null;
         public static async Task CheckKeyboardAsync()
         {
+            try
+            {
             if (Console.KeyAvailable || Action != "")
             {
                 ConsoleKeyInfo key = Console.ReadKey(true);
@@ -1024,6 +1027,11 @@ namespace Jammer
                 if (debug)
                     Message.Data(Environment.StackTrace, "sd");
             }
+            }
+            finally
+            {
+                _keyboardBusy = false;
+            }
         }
         public static void PauseSong(bool onlyPause = false)
         {
@@ -1140,7 +1148,10 @@ namespace Jammer
 
         public static async void InitializeSharpHook()
         {
+            if (_hook != null)
+                return; // already running, avoid re-initialization
             var hook = new TaskPoolGlobalHook();
+            _hook = hook;
             hook.KeyReleased += OnKeyReleased;     // EventHandler<KeyboardHookEventArgs>
             await hook.RunAsync();
         }
