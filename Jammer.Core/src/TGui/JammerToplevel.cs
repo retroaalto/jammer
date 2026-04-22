@@ -1,4 +1,5 @@
 using Terminal.Gui;
+using Jammer;
 using Jammer.TGui.Views;
 
 namespace Jammer.TGui
@@ -304,7 +305,7 @@ namespace Jammer.TGui
                         pw.Refresh();
                     Application.Refresh();
                 });
-            }, null, 0, 250);
+            }, null, 0, Visual.refreshTime);
         }
 
         protected override void Dispose(bool disposing)
