@@ -142,6 +142,39 @@ PausingEffect = true
             }
         }
 
+        /// <summary>
+        /// Returns raw float bar heights (same 'average' scale used internally in
+        /// GetSongVisual) without mapping to Unicode characters. Use together with
+        /// GetUnicodeMap() when you want to apply temporal smoothing before rendering.
+        /// </summary>
+        public static float[] GetSongVisualRaw(int length, bool isPlaying)
+        {
+            if (!isPlaying && pausingEffect)
+                scaleFactor *= (float)Math.Pow(0.95, Math.Max(1, refreshTime) / 6.0f);
+            else
+                scaleFactor = 1.0f;
+
+            int _bufferSize = bufferSize;
+            var fftData = new float[_bufferSize];
+            int bytesRead = Bass.ChannelGetData(Utils.CurrentMusic, fftData, (int)GetFFTDataFlags());
+            if (bytesRead <= 0)
+                return new float[Math.Max(length - 43, 1)];
+
+            int frequencyCount = Math.Max(1, Math.Min(length, fftData.Length));
+            int maxLength = Math.Max(length - 43, 1);
+            var result = new float[Math.Min(frequencyCount, maxLength)];
+
+            for (int i = 0; i < result.Length; i++)
+            {
+                double frequency = minFrequency * Math.Pow(maxFrequency / minFrequency, (double)i / frequencyCount);
+                int fftIndex = Math.Min((int)(frequency / 44100 * fftData.Length), fftData.Length - 1);
+                float fftValue = (float)Math.Pow(fftData[fftIndex] * scaleFactor, logarithmicMultiplier);
+                result[i] = (float)Math.Log10(1 + fftValue * frequencyMultiplier);
+            }
+
+            return result;
+        }
+
         public static string[] GetUnicodeMap()
         {
             if (Themes.CurrentTheme == null || Themes.CurrentTheme.Visualizer == null || Themes.CurrentTheme.Visualizer.UnicodeMap == null)

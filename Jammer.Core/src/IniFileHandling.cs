@@ -204,6 +204,58 @@ BackEndChange = B
             return key_value;
         }
 
+        /// <summary>
+        /// Write a specific keybind value directly by key name and save the file.
+        /// Used by the Terminal.Gui EditKeybindingsWindow.
+        /// </summary>
+        public static void WriteKeybind(string keyName, string value)
+        {
+            // Check for duplicates
+            foreach (var section in KeyData.Sections)
+            {
+                foreach (var key in section.Keys)
+                {
+                    if (key.KeyName != keyName &&
+                        key.Value.Replace(" ", "").Equals(value.Replace(" ", ""), StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Duplicate — refuse silently (caller may show a message)
+                        return;
+                    }
+                }
+            }
+
+            KeyData["Keybinds"][keyName] = value;
+            try
+            {
+                parser.WriteFile(Path.Combine(Utils.JammerPath, "KeyData.ini"), KeyData);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"WriteKeybind: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Returns all keybindings as (keyName, value, localeDescription) triples.
+        /// </summary>
+        public static List<(string KeyName, string Value, string Description)> GetAllKeybinds()
+        {
+            var result = new List<(string, string, string)>();
+            Type localeType = typeof(Locale.EditKeysTexts);
+            foreach (var section in KeyData.Sections)
+            {
+                foreach (var key in section.Keys)
+                {
+                    var field = localeType.GetField(key.KeyName,
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    string desc = field?.GetValue(null)?.ToString()
+                                  ?? Locale.OutsideItems.ErrorLoadingDescription;
+                    result.Add((key.KeyName, key.Value, desc));
+                }
+            }
+            return result;
+        }
+
         public static void Create_KeyDataIni(int hardReset)
         {
             string filePath = Path.Combine(Utils.JammerPath, "KeyData.ini");

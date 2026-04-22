@@ -1,5 +1,6 @@
 using ManagedBass;
 using Jammer;
+using Jammer.TGui;
 using System.Runtime.InteropServices;
 using Spectre.Console;
 using System.Diagnostics;
@@ -124,10 +125,26 @@ namespace Jammer
             AppDomain.CurrentDomain.ProcessExit += new EventHandler(Exit.OnProcessExit);
 
             Debug.dprint("Start Loop");
-            loopThread = new Thread(Loop);
-            visualizerThread = new Thread(EqualizerLoop);
-            loopThread.Start();
-            visualizerThread.Start();
+
+            if (UseNewUI)
+            {
+                // Terminal.Gui path — Application.Run() blocks until the app exits.
+                TGuiApp.Init();
+                var top = JammerToplevel.Build();
+                visualizerThread = new Thread(EqualizerLoop);
+                visualizerThread.Start();
+                TGuiApp.Run(top);
+                TGuiApp.Shutdown();
+                Environment.Exit(0);
+            }
+            else
+            {
+                // Legacy Spectre.Console path — unchanged.
+                loopThread = new Thread(Loop);
+                visualizerThread = new Thread(EqualizerLoop);
+                loopThread.Start();
+                visualizerThread.Start();
+            }
         }
 
         //

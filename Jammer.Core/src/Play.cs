@@ -97,7 +97,7 @@ namespace Jammer
 
             song.ExtractSongDetails();
 
-            Start.ClearKeyboardBuffer();
+            if (!Start.UseNewUI) Start.ClearKeyboardBuffer();
 
             // if file extension is .jammer-fav or .jammer:favorites
             if (song.URI != null && (song.URI.EndsWith(".jammer:fav") || song.URI.EndsWith(".jammer:favorites")))
@@ -309,7 +309,7 @@ namespace Jammer
                 }
                 else
                 {
-                    Start.ClearKeyboardBuffer();
+                    if (!Start.UseNewUI) Start.ClearKeyboardBuffer();
                     StartPlaying();
                 }
 
@@ -436,6 +436,14 @@ namespace Jammer
         public static void PauseSong()
         {
             Bass.ChannelPause(Utils.CurrentMusic);
+        }
+
+        public static void TogglePause()
+        {
+            if (Bass.ChannelIsActive(Utils.CurrentMusic) == PlaybackState.Playing)
+                Bass.ChannelPause(Utils.CurrentMusic);
+            else
+                Bass.ChannelPlay(Utils.CurrentMusic, false);
         }
 
         public static void ResumeSong()

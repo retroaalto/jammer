@@ -6,6 +6,9 @@ namespace Jammer
 {
     public partial class Start
     {
+        /// <summary>Set to true when --new-ui flag is passed. Routes startup through Terminal.Gui.</summary>
+        public static bool UseNewUI { get; private set; } = false;
+
         public static void CheckArgs(string[] args)
         {
             // NOTE(ra) If debug switch is defined remove it from the args list
@@ -14,6 +17,15 @@ namespace Jammer
                 string arg = args[i];
                 switch (arg)
                 {
+                    case "--new-ui":
+                        UseNewUI = true;
+                        List<string> newUiList = new List<string>(args);
+                        newUiList.RemoveAt(i);
+                        args = newUiList.ToArray();
+                        Utils.Songs = args;
+                        i--; // adjust index after removal
+                        break;
+
                     case "-D":
                         Utils.IsDebug = true;
                         Debug.dprint("\n--- Debug Started ---\n");

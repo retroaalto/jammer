@@ -291,6 +291,22 @@ Once all views are running stably under `--new-ui` and the flag is flipped to de
 
 ---
 
+## Resizing Requirement
+
+All Terminal.Gui views **must** respond correctly to terminal resize events.
+
+- Use `Dim.Fill()` and `Pos.AnchorEnd()` for all width/height dimensions — never hardcode
+  row or column counts.
+- Never use magic index constants (e.g. `LayoutConfig.DEFAULT_VIEW_MAGIC_INDEX`) for
+  heights or widths in any new view.
+- The content area must expand or contract as the terminal window resizes without any
+  manual resize handler needed — Terminal.Gui's layout engine handles this automatically
+  when `Dim.Fill()` is used correctly.
+- Verify resize behavior using the `tui-testing` skill by resizing the tmux pane after
+  launching the app. Every view must be verified this way before merging.
+
+---
+
 ## Key Design Decisions for Terminal.Gui
 
 ### Media key scope
