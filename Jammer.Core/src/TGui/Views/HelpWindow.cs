@@ -29,7 +29,7 @@ namespace Jammer.TGui.Views
             Add(tv);
         }
 
-        private static NStack.ustring BuildText()
+        private static string BuildText()
         {
             var sb = new System.Text.StringBuilder();
 
@@ -42,7 +42,7 @@ namespace Jammer.TGui.Views
             sb.AppendLine();
             sb.AppendLine("Esc: back to player");
 
-            return NStack.ustring.Make(sb.ToString());
+            return sb.ToString();
         }
 
         private static List<(string key, string desc)> GetHelpPairs()

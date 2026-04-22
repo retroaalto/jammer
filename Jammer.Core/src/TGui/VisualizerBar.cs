@@ -1,3 +1,4 @@
+using System.Drawing;
 using Terminal.Gui;
 using ManagedBass;
 
@@ -27,14 +28,14 @@ namespace Jammer.TGui
             Y = Pos.AnchorEnd(2);
             CanFocus = false;
             ColorScheme = TGuiTheme.LabelScheme(TGuiTheme.CurrentSongColor);
+
+            DrawingContent += OnDrawingContent;
         }
 
-        public override void OnDrawContent(Rect contentArea)
+        private void OnDrawingContent(object? sender, DrawEventArgs e)
         {
-            base.OnDrawContent(contentArea);
-
             bool isPlaying = Bass.ChannelIsActive(Utils.CurrentMusic) == PlaybackState.Playing;
-            int width = contentArea.Width;
+            int width = Viewport.Width;
             if (width <= 0)
                 return;
 
@@ -71,9 +72,9 @@ namespace Jammer.TGui
             else if (line.Length > width)
                 line = line[..width];
 
-            Driver.SetAttribute(ColorScheme.Normal);
+            Driver?.SetAttribute(ColorScheme.Normal);
             Move(0, 0);
-            Driver.AddStr(line);
+            Driver?.AddStr(line);
         }
     }
 }

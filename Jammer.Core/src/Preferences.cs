@@ -35,6 +35,8 @@ namespace Jammer
         public static string theme = GetTheme();
         public static string currentSf2 = GetCurrentSf2();
         public static string clientID = GetClientId();
+        public static DateTime? clientIDFetchedAt = GetClientIdFetchedAt();
+        public static int scClientIdTTLDays = GetScClientIdTTLDays();
         public static bool isModifierKeyHelper = GetModifierKeyHelper();
         public static bool isSkipErrors = GetIsSkipErrors();
         public static bool showPlaylistPosition = GetShowPlaylistPosition();
@@ -179,6 +181,10 @@ namespace Jammer
 
 
             // check if settings.json has every data
+            // Re-read mutable user-managed fields from disk so manual edits are respected
+            clientID = GetClientId();
+            clientIDFetchedAt = GetClientIdFetchedAt();
+            scClientIdTTLDays = GetScClientIdTTLDays();
             SaveSettings();
 
             Log.Info("Loading Effects.ini");
@@ -227,6 +233,8 @@ namespace Jammer
             settings.theme = theme;
             settings.currentSf2 = currentSf2;
             settings.clientID = clientID;
+            settings.clientIDFetchedAt = clientIDFetchedAt;
+            settings.scClientIdTTLDays = scClientIdTTLDays;
             settings.modifierKeyHelper = isModifierKeyHelper;
             settings.isIgnoreErrors = isSkipErrors;
             settings.showPlaylistPosition = showPlaylistPosition;
@@ -568,6 +576,30 @@ namespace Jammer
             }
         }
 
+        static public DateTime? GetClientIdFetchedAt()
+        {
+            string JammerPath = Path.Combine(Utils.JammerPath, "settings.json");
+            if (File.Exists(JammerPath))
+            {
+                string jsonString = File.ReadAllText(JammerPath);
+                Settings? settings = JsonSerializer.Deserialize<Settings>(jsonString);
+                return settings?.clientIDFetchedAt;
+            }
+            return null;
+        }
+
+        static public int GetScClientIdTTLDays()
+        {
+            string JammerPath = Path.Combine(Utils.JammerPath, "settings.json");
+            if (File.Exists(JammerPath))
+            {
+                string jsonString = File.ReadAllText(JammerPath);
+                Settings? settings = JsonSerializer.Deserialize<Settings>(jsonString);
+                return settings?.scClientIdTTLDays ?? 7;
+            }
+            return 7;
+        }
+
         static public void OpenJammerFolder()
         {
             string JammerPath = Path.Combine(Utils.JammerPath, "settings.json");
@@ -628,6 +660,8 @@ namespace Jammer
             public string? theme { get; set; }
             public string? currentSf2 { get; set; }
             public string? clientID { get; set; }
+            public DateTime? clientIDFetchedAt { get; set; }
+            public int? scClientIdTTLDays { get; set; }
             public bool? modifierKeyHelper { get; set; }
             public bool? isIgnoreErrors { get; set; }
             public bool? showPlaylistPosition { get; set; }

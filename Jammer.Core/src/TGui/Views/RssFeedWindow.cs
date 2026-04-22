@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Terminal.Gui;
 
 namespace Jammer.TGui.Views
@@ -28,7 +29,7 @@ namespace Jammer.TGui.Views
                 Height = Dim.Fill(1),
                 CanFocus = true,
             };
-            _list.OpenSelectedItem += OnEpisodeSelected;
+            _list.OpenSelectedItem += (_, e) => OnEpisodeSelected(e);
 
             var hint = new Label
             {
@@ -65,7 +66,7 @@ namespace Jammer.TGui.Views
                 })
                 .ToList();
 
-            _list.SetSource(items);
+            _list.SetSource<string>(new ObservableCollection<string>(items));
 
             int idx = Math.Clamp(Utils.CurrentSongIndex, 0, Math.Max(0, items.Count - 1));
             _list.SelectedItem = idx;
@@ -77,14 +78,14 @@ namespace Jammer.TGui.Views
             Play.PlaySong(Utils.Songs, e.Item);
         }
 
-        public override bool ProcessKey(KeyEvent keyEvent)
+        protected override bool OnKeyDown(Key key)
         {
-            if (KeybindingParser.Matches(keyEvent, Keybindings.ExitRssFeed))
+            if (KeybindingParser.Matches(key, Keybindings.ExitRssFeed))
             {
                 ExitFeed();
                 return true;
             }
-            return base.ProcessKey(keyEvent);
+            return base.OnKeyDown(key);
         }
 
         private void ExitFeed()

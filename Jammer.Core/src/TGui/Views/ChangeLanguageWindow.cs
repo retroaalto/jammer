@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Terminal.Gui;
 
 namespace Jammer.TGui.Views
@@ -19,7 +20,7 @@ namespace Jammer.TGui.Views
         public ChangeLanguageWindow()
         {
             Title = Locale.Help.ChangeLanguage;
-            Border.BorderStyle = BorderStyle.Single;
+            BorderStyle = LineStyle.Single;
 
             _list = new ListView
             {
@@ -28,7 +29,7 @@ namespace Jammer.TGui.Views
                 Width = Dim.Fill(),
                 Height = Dim.Fill(1),
             };
-            _list.OpenSelectedItem += OnItemSelected;
+            _list.OpenSelectedItem += (_, e) => OnItemSelected(e);
 
             _hint = new Label
             {
@@ -43,16 +44,16 @@ namespace Jammer.TGui.Views
             LoadLocales();
         }
 
-        public override bool ProcessKey(KeyEvent keyEvent)
+        protected override bool OnKeyDown(Key key)
         {
-            if (keyEvent.Key == Key.Enter)
+            if (key == Key.Enter)
             {
                 int idx = _list.SelectedItem;
                 if (idx >= 0 && idx < _filePaths.Length)
                 {
                     var path = _filePaths[idx];
                     // Defer so MessageBox.Query is not called from within ProcessKey.
-                    Application.MainLoop?.AddIdle(() =>
+                    Application.AddIdle(() =>
                     {
                         OnItemSelected(new ListViewItemEventArgs(idx, path));
                         return false;
@@ -60,12 +61,12 @@ namespace Jammer.TGui.Views
                 }
                 return true;
             }
-            if (keyEvent.Key == Key.Esc)
+            if (key == Key.Esc)
             {
                 ExitRequested?.Invoke();
                 return true;
             }
-            return base.ProcessKey(keyEvent);
+            return base.OnKeyDown(key);
         }
 
         private void LoadLocales()
@@ -73,7 +74,7 @@ namespace Jammer.TGui.Views
             string path = Path.Combine(Utils.JammerPath, "locales");
             if (!Directory.Exists(path))
             {
-                _list.SetSource(new[] { $"(locales directory not found: {path})" });
+                _list.SetSource<string>(new ObservableCollection<string>(new[] { $"(locales directory not found: {path})" }));
                 return;
             }
 
@@ -82,7 +83,7 @@ namespace Jammer.TGui.Views
                 .Select(f => Path.GetFileNameWithoutExtension(f))
                 .ToList();
 
-            _list.SetSource(displayNames);
+            _list.SetSource<string>(new ObservableCollection<string>(displayNames));
 
             // Pre-select the currently active locale
             int current = Array.FindIndex(_filePaths,

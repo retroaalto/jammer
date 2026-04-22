@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Terminal.Gui;
 
 namespace Jammer.TGui.Views
@@ -19,7 +20,7 @@ namespace Jammer.TGui.Views
         public SettingsWindow()
         {
             Title = "Settings";
-            Border.BorderStyle = BorderStyle.Single;
+            BorderStyle = LineStyle.Single;
 
             _list = new ListView
             {
@@ -29,7 +30,7 @@ namespace Jammer.TGui.Views
                 Height = Dim.Fill(1),
                 CanFocus = true,
             };
-            _list.OpenSelectedItem += OnActivate;
+            _list.OpenSelectedItem += (_, e) => OnActivate(e);
 
             _hint = new Label
             {
@@ -45,16 +46,16 @@ namespace Jammer.TGui.Views
             RenderList();
         }
 
-        public override bool ProcessKey(KeyEvent keyEvent)
+        protected override bool OnKeyDown(Key key)
         {
-            if (keyEvent.Key == Key.Enter)
+            if (key == Key.Enter)
             {
                 int idx = _list.SelectedItem;
                 if (idx >= 0 && idx < _rows.Count)
                 {
                     var row = _rows[idx];
                     // Defer so Application.Run(dialog) is not called from within ProcessKey.
-                    Application.MainLoop?.AddIdle(() =>
+                    Application.AddIdle(() =>
                     {
                         row.Activate();
                         RenderList();
@@ -63,12 +64,12 @@ namespace Jammer.TGui.Views
                 }
                 return true;
             }
-            if (keyEvent.Key == Key.Esc)
+            if (key == Key.Esc)
             {
                 ExitRequested?.Invoke();
                 return true;
             }
-            return base.ProcessKey(keyEvent);
+            return base.OnKeyDown(key);
         }
 
         private void OnActivate(ListViewItemEventArgs e)
@@ -84,7 +85,7 @@ namespace Jammer.TGui.Views
                 .Select(r => $"{r.Name,-35}  {r.ValueGetter()}")
                 .ToList();
             int sel = _list.SelectedItem;
-            _list.SetSource(display);
+            _list.SetSource<string>(new ObservableCollection<string>(display));
             _list.SelectedItem = Math.Clamp(sel, 0, Math.Max(0, display.Count - 1));
         }
 
@@ -93,20 +94,21 @@ namespace Jammer.TGui.Views
         private static string? PromptText(string title, string current)
         {
             string? result = null;
-            var dialog = new Dialog(title, 60, 8);
+            var dialog = new Dialog { Title = title, Width = 60, Height = 8 };
 
             var label = new Label { X = 1, Y = 0, Text = $"Current: {current}" };
-            var field = new TextField(current) { X = 1, Y = 2, Width = Dim.Fill(2) };
-            var ok = new Button("OK", is_default: true);
-            var cancel = new Button("Cancel");
+            var field = new TextField { X = 1, Y = 2, Width = Dim.Fill(2), Text = current };
+            var ok = new Button { Title = "OK", IsDefault = true };
+            var cancel = new Button { Title = "Cancel" };
 
-            ok.Clicked += () => { result = field.Text?.ToString(); dialog.Running = false; };
-            cancel.Clicked += () => { result = null; dialog.Running = false; };
+            ok.Accepting += (_, _) => { result = field.Text?.ToString(); Application.RequestStop(); };
+            cancel.Accepting += (_, _) => { result = null; Application.RequestStop(); };
 
             dialog.AddButton(ok);
             dialog.AddButton(cancel);
             dialog.Add(label, field);
             Application.Run(dialog);
+            dialog.Dispose();
             return result;
         }
 

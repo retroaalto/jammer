@@ -8,14 +8,12 @@ namespace Jammer.TGui
     /// Root Terminal.Gui Toplevel for Jammer.
     ///
     /// Layout (bottom-anchored, fills on resize automatically):
-    ///   ┌─ active view (Dim.Fill minus 1 for PlayerStatusBar) ───────────────┐
-    ///   └────────────────────────────────────────────────────────────────────┘
-    ///   ┌─ PlayerStatusBar (1 row, anchored to bottom) ──────────────────────┐
-    ///   └────────────────────────────────────────────────────────────────────┘
-    ///
-    /// All dimensions use Dim.Fill() / Pos.AnchorEnd() — no magic numbers.
-    /// Media keys are handled here so they are available globally but do not
-    /// fire when a focused child (e.g. ListView) has consumed the key first.
+    ///   ┌─ active view (Dim.Fill minus 2 for VisualizerBar + PlayerStatusBar) ─┐
+    ///   └────────────────────────────────────────────────────────────────────────┘
+    ///   ┌─ VisualizerBar (1 row) ────────────────────────────────────────────────┐
+    ///   └────────────────────────────────────────────────────────────────────────┘
+    ///   ┌─ PlayerStatusBar (1 row, anchored to bottom) ──────────────────────────┐
+    ///   └────────────────────────────────────────────────────────────────────────┘
     /// </summary>
     public class JammerToplevel : Toplevel
     {
@@ -38,24 +36,22 @@ namespace Jammer.TGui
             top.ShowPlayer();          // default view
             top.StartUiTimer();
 
-            // Re-layout when terminal is resized
-            top.Resized += size =>
-            {
-                top.Width = size.Width;
-                top.Height = size.Height;
-                top.LayoutSubviews();
-                top.SetNeedsDisplay();
-                Application.Refresh();
-            };
+            // Register global key handler at the Application level so keys reach us
+            // regardless of which child view currently has focus.
+            Application.KeyDown += top.HandleKeyDown;
 
-            Application.Resized = args =>
+            // Re-layout when terminal is resized (v2: subscribe to driver SizeChanged)
+            if (Application.Driver != null)
             {
-                top.Width = args.Cols;
-                top.Height = args.Rows;
-                top.LayoutSubviews();
-                top.SetNeedsDisplay();
-                Application.Refresh();
-            };
+                Application.Driver.SizeChanged += (_, args) =>
+                {
+                    top.Width = args.Size?.Width ?? Application.Driver?.Cols ?? 80;
+                    top.Height = args.Size?.Height ?? Application.Driver?.Rows ?? 24;
+                    top.Layout();
+                    top.SetNeedsDraw();
+                    Application.LayoutAndDraw();
+                };
+            }
 
             return top;
         }
@@ -116,7 +112,6 @@ namespace Jammer.TGui
                 Remove(_currentView);
 
             _currentView = view;
-            // Fill everything except the bottom status bar row
             _currentView.X = 0;
             _currentView.Y = 0;
             _currentView.Width = Dim.Fill();
@@ -124,26 +119,34 @@ namespace Jammer.TGui
             _currentView.Height = Dim.Fill(2);
 
             Add(_currentView);
-            SetNeedsDisplay();
-            _currentView.SetNeedsDisplay();
-            Application.Refresh();
-            // SetFocus on the container, then drill into the first focusable child
-            // (e.g. the ListView inside SettingsWindow) so key events route correctly.
+            SetNeedsDraw();
+            _currentView.SetNeedsDraw();
+            Application.LayoutAndDraw();
             _currentView.SetFocus();
-            _currentView.FocusFirst();
+            _currentView.AdvanceFocus(NavigationDirection.Forward, TabBehavior.TabStop);
         }
 
-        // ── Global key handling ─────────────────────────────────────────────
+        // ── Key handling ────────────────────────────────────────────────────
         //
-        // ProcessHotKey fires BEFORE the focused child — all global keys live here
-        // so that ListView quick-jump or other child handlers cannot swallow them.
-        //
-        // ProcessColdKey handles volume/seek so a focused child gets arrows first
-        // (e.g. ListView scrolling), and only falls through to volume if unhandled.
+        // Registered on Application.KeyDown so keys arrive regardless of which
+        // child view has focus. Set e.Handled = true to consume.
 
-        public override bool ProcessHotKey(KeyEvent keyEvent)
+        private void HandleKeyDown(object? sender, Key e)
         {
-            bool M(string kb) => KeybindingParser.Matches(keyEvent, kb);
+            if (DispatchKey(e))
+                e.Handled = true;
+        }
+
+        protected override bool OnKeyDown(Key key)
+        {
+            if (DispatchKey(key))
+                return true;
+            return base.OnKeyDown(key);
+        }
+
+        private bool DispatchKey(Key key)
+        {
+            bool M(string kb) => KeybindingParser.Matches(key, kb);
 
             // ── View switching ─────────────────────────────────────────────
             if (M(Keybindings.Help))             { ShowHelp();                return true; }
@@ -152,6 +155,13 @@ namespace Jammer.TGui
             if (M(Keybindings.ChangeLanguage))   { ShowChangeLanguage();      return true; }
             if (M(Keybindings.EditKeybindings))  { ShowEditKeybindings();     return true; }
             if (M(Keybindings.Quit))             { Preferences.SaveSettings(); Application.RequestStop(); return true; }
+
+            // ── ToMainMenu / Escape → player ──────────────────────────────
+            if (M(Keybindings.ToMainMenu))
+            {
+                ShowPlayer();
+                return true;
+            }
 
             // ── Playback ───────────────────────────────────────────────────
             if (M(Keybindings.PlayPause))        { Play.TogglePause();        return true; }
@@ -205,8 +215,6 @@ namespace Jammer.TGui
             }
 
             // ── Volume + seek (plain arrows — only when no list view focused) ──
-            // In AllSongsWindow / Settings / etc. Up/Down scroll the list,
-            // so we skip volume handling there.
             bool listViewFocused = _currentView is AllSongsWindow
                                                 or SettingsWindow
                                                 or EditKeybindingsWindow
@@ -229,7 +237,7 @@ namespace Jammer.TGui
             }
             if (M(Keybindings.SaveAsPlaylist))
             {
-                Application.MainLoop?.AddIdle(() =>
+                Application.AddIdle(() =>
                 {
                     string? name = TGuiDialogs.Input(
                         Locale.Player.SaveAsPlaylistMessage1,
@@ -242,7 +250,7 @@ namespace Jammer.TGui
             }
             if (M(Keybindings.AddSongToPlaylist))
             {
-                Application.MainLoop?.AddIdle(() =>
+                Application.AddIdle(() =>
                 {
                     string? song = TGuiDialogs.Input(
                         Locale.Player.AddSongToPlaylistMessage1,
@@ -262,25 +270,8 @@ namespace Jammer.TGui
                 return true;
             }
 
-            return base.ProcessHotKey(keyEvent);
+            return false;
         }
-
-        public override bool ProcessKey(KeyEvent keyEvent)
-        {
-            // Escape → back to Player view (ToMainMenu keybinding)
-            if (KeybindingParser.Matches(keyEvent, Keybindings.ToMainMenu))
-            {
-                ShowPlayer();
-                return true;
-            }
-
-            return base.ProcessKey(keyEvent);
-        }
-
-        // ProcessColdKey is intentionally left minimal.  All global keys now
-        // live in ProcessHotKey (which fires before any focused child) so they
-        // can never be swallowed by ListView or FrameView internals.
-        public override bool ProcessColdKey(KeyEvent keyEvent) => base.ProcessColdKey(keyEvent);
 
         // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -296,14 +287,14 @@ namespace Jammer.TGui
         {
             _uiTimer = new System.Threading.Timer(_ =>
             {
-                Application.MainLoop?.Invoke(() =>
+                Application.Invoke(() =>
                 {
                     _statusBar.UpdateProgress();
-                    _visualizerBar.SetNeedsDisplay();
+                    _visualizerBar.SetNeedsDraw();
                     // Refresh PlayerWindow if it is the active view
                     if (_currentView is PlayerWindow pw)
                         pw.Refresh();
-                    Application.Refresh();
+                    Application.LayoutAndDraw();
                 });
             }, null, 0, Visual.refreshTime);
         }
@@ -313,6 +304,7 @@ namespace Jammer.TGui
             if (disposing)
             {
                 _uiTimer?.Dispose();
+                Application.KeyDown -= HandleKeyDown;
             }
             base.Dispose(disposing);
         }

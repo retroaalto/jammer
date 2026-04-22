@@ -3,7 +3,7 @@ using Terminal.Gui;
 namespace Jammer.TGui
 {
     /// <summary>
-    /// Bridges Jammer's Spectre.Console-based theme system to Terminal.Gui ColorSchemes.
+    /// Bridges Jammer's Spectre.Console-based theme system to Terminal.Gui v2 ColorSchemes.
     ///
     /// Call Apply() once after Application.Init() and after Themes.Init().
     /// Views read the public static color/scheme properties to color their labels.
@@ -38,41 +38,45 @@ namespace Jammer.TGui
             Base = BuildBase();
             Dim  = BuildDim();
 
-            // Apply dark scheme globally — overrides Terminal.Gui's blue-grey default.
-            Colors.Base    = Base;
-            Colors.Dialog  = MakeScheme(Color.White, Color.Black, CurrentSongColor);
-            Colors.Menu    = MakeScheme(Color.White, Color.Black, CurrentSongColor);
-            Colors.Error   = MakeScheme(Color.BrightRed, Color.Black, Color.White);
+            // Push our base scheme into the global color scheme table so all
+            // views that don't override ColorScheme inherit it.
+            Colors.ColorSchemes["Base"]   = Base;
+            Colors.ColorSchemes["Dialog"] = MakeScheme(Color.White, Color.Black, CurrentSongColor);
+            Colors.ColorSchemes["Menu"]   = MakeScheme(Color.White, Color.Black, CurrentSongColor);
+            Colors.ColorSchemes["Error"]  = MakeScheme(Color.BrightRed, Color.Black, Color.White);
         }
 
         // ── Helpers for views ─────────────────────────────────────────────
 
-        /// <summary>Return a ColorScheme with the given foreground on black background.</summary>
+        // v2 Color is RGB-based; use Black as the default background.
+        private static readonly Color DefaultBg = Color.Black;
+
+        /// <summary>Return a ColorScheme with the given foreground on the terminal default background.</summary>
         public static ColorScheme LabelScheme(Color fg) =>
-            MakeScheme(fg, Color.Black, fg);
+            MakeScheme(fg, DefaultBg, fg);
 
         // ── Internal ──────────────────────────────────────────────────────
 
         private static ColorScheme BuildBase() =>
-            MakeScheme(Color.White, Color.Black, CurrentSongColor);
+            MakeScheme(Color.White, DefaultBg, CurrentSongColor);
 
         private static ColorScheme BuildDim() =>
-            MakeScheme(Color.Gray, Color.Black, Color.Gray);
+            MakeScheme(Color.Gray, DefaultBg, Color.Gray);
 
         private static ColorScheme MakeScheme(Color fg, Color bg, Color hotFg) =>
             new ColorScheme
             {
-                Normal    = Terminal.Gui.Attribute.Make(fg, bg),
-                Focus     = Terminal.Gui.Attribute.Make(Color.Black, fg),
-                HotNormal = Terminal.Gui.Attribute.Make(hotFg, bg),
-                HotFocus  = Terminal.Gui.Attribute.Make(Color.Black, hotFg),
-                Disabled  = Terminal.Gui.Attribute.Make(Color.DarkGray, bg),
+                Normal    = new Terminal.Gui.Attribute(fg, bg),
+                Focus     = new Terminal.Gui.Attribute(Color.Black, fg),
+                HotNormal = new Terminal.Gui.Attribute(hotFg, bg),
+                HotFocus  = new Terminal.Gui.Attribute(Color.Black, hotFg),
+                Disabled  = new Terminal.Gui.Attribute(Color.DarkGray, bg),
             };
 
         /// <summary>
         /// Map a Spectre.Console color name (e.g. "green", "red bold") to the
         /// nearest Terminal.Gui Color. Style modifiers (bold, italic, etc.) are
-        /// ignored — Terminal.Gui v1 does not support them.
+        /// ignored — Terminal.Gui v2 handles bold via Attribute flags.
         /// Returns <paramref name="fallback"/> for empty / unknown names.
         /// </summary>
         public static Color SpectreToTGui(string? name, Color fallback)
@@ -95,7 +99,7 @@ namespace Jammer.TGui
                 "grey" or "gray"         => Color.Gray,
                 "darkgrey" or "darkgray" => Color.DarkGray,
                 "magenta"                => Color.BrightMagenta,
-                "orange"                 => Color.Brown,
+                "orange"                 => Color.Yellow,
                 "purple"                 => Color.Magenta,
                 _                        => fallback,
             };

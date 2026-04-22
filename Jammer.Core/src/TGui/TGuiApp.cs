@@ -3,7 +3,7 @@ using Terminal.Gui;
 namespace Jammer.TGui
 {
     /// <summary>
-    /// Thin wrapper around Terminal.Gui Application lifetime.
+    /// Thin wrapper around Terminal.Gui v2 Application lifetime.
     /// All new-UI work goes through this class; old TUI.cs is untouched.
     /// </summary>
     public static class TGuiApp
@@ -13,6 +13,10 @@ namespace Jammer.TGui
         public static void Init()
         {
             Application.Init();
+
+            // v2: Color.Default maps to the terminal's own background automatically.
+            // No need to call UseDefaultColors() — the driver handles it internally.
+
             TGuiTheme.Apply();
             Enabled = true;
         }
@@ -25,8 +29,7 @@ namespace Jammer.TGui
 
         public static void Run(Toplevel top) => Application.Run(top, (ex) =>
         {
-            // Log but don't crash — Terminal.Gui v1 NStack rendering bugs with
-            // certain string widths can throw from Redraw; we survive them.
+            // Log but don't crash — non-fatal render errors are survived.
             Log.Error($"TGui render error (non-fatal): {ex.GetType().Name}: {ex.Message}");
             return true; // true = handled, continue running
         });
@@ -36,7 +39,7 @@ namespace Jammer.TGui
         /// </summary>
         public static void Invoke(Action action)
         {
-            Application.MainLoop.Invoke(action);
+            Application.Invoke(action);
         }
     }
 }

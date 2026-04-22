@@ -64,7 +64,7 @@ namespace Jammer.TGui
             if (title.Length > 30) title = title[..27] + "...";
 
             _label.Text = $" {playIcon} {loopIcon} {shuffleIcon}  {timeStr}  [{bar}]  {vol}%  {title}";
-            SetNeedsDisplay();
+            SetNeedsDraw();
         }
 
         private static string FormatTime(double seconds)
