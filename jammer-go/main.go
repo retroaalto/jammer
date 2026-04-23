@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/jooapa/jammer/jammer-go/internal/audio"
+	"github.com/jooapa/jammer/jammer-go/internal/keybinds"
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
 	"github.com/jooapa/jammer/jammer-go/internal/ui"
@@ -18,9 +19,10 @@ import (
 // settings mirrors the fields of settings.json that main.go cares about.
 // Unknown fields are preserved via the raw map when saving.
 type settings struct {
-	BackEndType int `json:"backEndType"`
-	SeekStep    int `json:"seekStep"` // seconds per seek keypress; 0 or missing → default 2
-	LoopType    int `json:"LoopType"` // 0=off, 1=all, 2=one
+	BackEndType int    `json:"backEndType"`
+	SeekStep    int    `json:"seekStep"`    // seconds per seek keypress; 0 or missing → default 2
+	LoopType    int    `json:"LoopType"`    // 0=off, 1=all, 2=one
+	DefaultView string `json:"defaultView"` // "default" or "all"; empty → "default"
 }
 
 const defaultSeekStep = 2
@@ -164,11 +166,14 @@ func main() {
 		seekStep = defaultSeekStep
 	}
 
+	// Load keybindings from KeyData.ini
+	kb := keybinds.New()
+
 	var m ui.Model
 	if resolvedPlaylist != "" {
-		m = ui.NewWithPlaylist(p, songsDir, plsDir, resolvedPlaylist, seekStep)
+		m = ui.NewWithPlaylist(p, songsDir, plsDir, resolvedPlaylist, seekStep, cfg.DefaultView, kb)
 	} else {
-		m = ui.New(p, songsDir, plsDir, seekStep)
+		m = ui.New(p, songsDir, plsDir, seekStep, cfg.DefaultView, kb)
 	}
 	prog := tea.NewProgram(m)
 	if _, err := prog.Run(); err != nil {

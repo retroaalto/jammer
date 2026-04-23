@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jooapa/jammer/jammer-go/internal/downloader"
+	"github.com/jooapa/jammer/jammer-go/internal/keybinds"
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
@@ -43,9 +44,15 @@ type downloadDoneMsg struct {
 type viewKind int
 
 const (
-	viewSongs          viewKind = iota // song list
+	viewDefault        viewKind = iota // 3-song snippet (prev/current/next)
+	viewAll                            // full scrollable list
 	viewPlaylists                      // playlist browser
 	viewConfirmConvert                 // prompt to convert legacy playlist
+	viewHelp                           // help screen (Phase 5)
+	viewSettings                       // settings screen (Phase 6)
+	viewRename                         // rename song input (Phase 7)
+	viewInfo                           // song info overlay (Phase 7)
+	viewAddSong                        // add song input (Phase 7)
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -113,6 +120,7 @@ type Model struct {
 	p        *player.Player
 	songsDir string
 	plsDir   string
+	kb       *keybinds.Keybinds // loaded keybindings
 
 	// config
 	seekStep int  // seconds per seek keypress
@@ -157,22 +165,30 @@ type Model struct {
 	lastErrTime time.Time // when lastError was set; cleared after 8 s by tickMsg
 }
 
-func New(p *player.Player, songsDir, plsDir string, seekStep int) Model {
-	return NewWithPlaylist(p, songsDir, plsDir, "", seekStep)
+func New(p *player.Player, songsDir, plsDir string, seekStep int, defaultView string, kb *keybinds.Keybinds) Model {
+	return NewWithPlaylist(p, songsDir, plsDir, "", seekStep, defaultView, kb)
 }
 
-func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekStep int) Model {
+func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekStep int, defaultView string, kb *keybinds.Keybinds) Model {
 	if seekStep <= 0 {
 		seekStep = 2
 	}
+	// Determine initial view based on defaultView setting
+	initialView := viewDefault
+	if defaultView == "all" {
+		initialView = viewAll
+	}
+
 	m := Model{
 		p:        p,
 		songsDir: songsDir,
 		plsDir:   plsDir,
+		kb:       kb,
 		seekStep: seekStep,
 		songs:    p.Songs(),
 		playing:  p.Index(),
 		dlStates: make(map[int]*dlState),
+		view:     initialView,
 	}
 	m.reloadPlaylists()
 	if plsFile != "" {
@@ -442,32 +458,47 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	jlog.Key(msg.String(), viewName)
 
-	switch msg.String() {
-	case "q", "ctrl+c":
+	keyStr := msg.String()
+
+	// Quit
+	if m.kb.Is("Quit", keyStr) {
 		m.p.Stop()
 		return m, tea.Quit
+	}
 
-	case "tab":
-		if m.view == viewConfirmConvert {
-			break // ignore tab during confirm prompt
+	// ToMainMenu (Escape) - only if not in confirm convert
+	if m.kb.Is("ToMainMenu", keyStr) && m.view != viewConfirmConvert {
+		if m.view == viewDefault || m.view == viewAll {
+			// If not in songs view, return to default view
+			if m.view != viewDefault {
+				m.view = viewDefault
+			}
 		}
-		if m.view == viewSongs {
+		return m, nil
+	}
+
+	// View switching (Tab, Shift+F, Shift+O)
+	if m.kb.Is("CommandHelpScreen", keyStr) || m.kb.Is("ListAllPlaylists", keyStr) || m.kb.Is("PlayOtherPlaylist", keyStr) {
+		if m.view == viewConfirmConvert {
+			return m, nil // ignore during confirm prompt
+		}
+		if m.view == viewDefault || m.view == viewAll {
 			m.view = viewPlaylists
 			m.reloadPlaylists()
 		} else {
-			m.view = viewSongs
+			m.view = viewDefault
 		}
-
-	default:
-		if m.view == viewConfirmConvert {
-			return m.handleConfirmConvertKey(msg)
-		}
-		if m.view == viewPlaylists {
-			return m.handlePlaylistKey(msg)
-		}
-		return m.handleSongKey(msg)
+		return m, nil
 	}
-	return m, nil
+
+	// Default handler routing
+	if m.view == viewConfirmConvert {
+		return m.handleConfirmConvertKey(msg)
+	}
+	if m.view == viewPlaylists {
+		return m.handlePlaylistKey(msg)
+	}
+	return m.handleSongKey(msg)
 }
 
 func (m Model) handleConfirmConvertKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -483,7 +514,7 @@ func (m Model) handleConfirmConvertKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		m.applyPlaylist("", m.convertEntries)
 		m.convertFile = ""
 		m.convertEntries = nil
-		m.view = viewSongs
+		m.view = viewDefault
 	}
 	return m, nil
 }
@@ -494,20 +525,28 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterKey(msg)
 	}
 
-	switch msg.String() {
-	case "up", "k":
+	keyStr := msg.String()
+
+	// Navigation
+	if m.kb.Is("PlaylistViewScrollup", keyStr) || keyStr == "up" || keyStr == "k" {
 		if m.scursor > 0 {
 			m.scursor--
 			m.clampSongScroll()
 		}
-	case "down", "j":
+		return m, nil
+	}
+	if m.kb.Is("PlaylistViewScrolldown", keyStr) || keyStr == "down" || keyStr == "j" {
 		if m.scursor < m.filterLen()-1 {
 			m.scursor++
 			m.clampSongScroll()
 		}
-	case "space", "enter":
+		return m, nil
+	}
+
+	// Play/Pause
+	if m.kb.Is("PlayPause", keyStr) || keyStr == "space" || keyStr == "enter" {
 		if m.scursor >= m.filterLen() {
-			break
+			return m, nil
 		}
 		_, realIdx := m.filterSong(m.scursor)
 		if realIdx == m.playing && m.p.State() != player.StateStopped {
@@ -529,13 +568,21 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Download if the song isn't local yet.
 			return m, tea.Batch(m.downloadIfNeeded(realIdx), m.startViz(0))
 		}
-	case "s":
+		return m, nil
+	}
+
+	// Stop
+	if keyStr == "s" {
 		jlog.Infof("ui: stop")
 		m.p.Stop()
-	case "n":
+		return m, nil
+	}
+
+	// Next Song
+	if m.kb.Is("NextSong", keyStr) {
 		if ds := m.dlStates[m.playing]; ds != nil && ds.active {
 			jlog.Infof("ui: next blocked — download active for index=%d", m.playing)
-			break
+			return m, nil
 		}
 		if err := m.p.Next(); err != nil {
 			jlog.Errorf("ui: next failed: %v", err)
@@ -546,10 +593,13 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.clampSongScroll()
 		jlog.Infof("ui: next → index=%d", m.playing)
 		return m, tea.Batch(m.downloadIfNeeded(m.playing), m.startViz(0))
-	case "p":
+	}
+
+	// Previous Song
+	if m.kb.Is("PreviousSong", keyStr) {
 		if ds := m.dlStates[m.playing]; ds != nil && ds.active {
 			jlog.Infof("ui: prev blocked — download active for index=%d", m.playing)
-			break
+			return m, nil
 		}
 		if err := m.p.Prev(); err != nil {
 			jlog.Errorf("ui: prev failed: %v", err)
@@ -560,25 +610,68 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.clampSongScroll()
 		jlog.Infof("ui: prev → index=%d", m.playing)
 		return m, tea.Batch(m.downloadIfNeeded(m.playing), m.startViz(0))
-	case "right", "l":
+	}
+
+	// Seek forward
+	if m.kb.Is("Forward5s", keyStr) || keyStr == "right" || keyStr == "l" {
 		m.p.SeekForward(float64(m.seekStep))
 		jlog.Infof("ui: seek +%ds", m.seekStep)
-	case "left", "h":
+		return m, nil
+	}
+
+	// Seek backward
+	if m.kb.Is("Backwards5s", keyStr) || keyStr == "left" || keyStr == "h" {
 		m.p.SeekBackward(float64(m.seekStep))
 		jlog.Infof("ui: seek -%ds", m.seekStep)
-	case "+", "=":
+		return m, nil
+	}
+
+	// Volume up
+	if m.kb.Is("VolumeUp", keyStr) || keyStr == "+" || keyStr == "=" {
 		m.p.SetVolume(m.p.Volume() + 0.05)
 		jlog.Infof("ui: volume up → %.0f%%", float64(m.p.Volume())*100)
-	case "-":
+		return m, nil
+	}
+
+	// Volume down
+	if m.kb.Is("VolumeDown", keyStr) || keyStr == "-" {
 		m.p.SetVolume(m.p.Volume() - 0.05)
 		jlog.Infof("ui: volume down → %.0f%%", float64(m.p.Volume())*100)
-	case "L":
+		return m, nil
+	}
+
+	// Volume +1%
+	if m.kb.Is("VolumeUpByOne", keyStr) {
+		m.p.SetVolume(m.p.Volume() + 0.01)
+		jlog.Infof("ui: volume +1%% → %.0f%%", float64(m.p.Volume())*100)
+		return m, nil
+	}
+
+	// Volume -1%
+	if m.kb.Is("VolumeDownByOne", keyStr) {
+		m.p.SetVolume(m.p.Volume() - 0.01)
+		jlog.Infof("ui: volume -1%% → %.0f%%", float64(m.p.Volume())*100)
+		return m, nil
+	}
+
+	// Mute
+	if m.kb.Is("Mute", keyStr) {
+		// TODO: implement mute in player if not already there
+		return m, nil
+	}
+
+	// Loop
+	if m.kb.Is("Loop", keyStr) {
 		next := (m.p.GetLoopMode() + 1) % 3
 		m.p.SetLoopMode(next)
 		jlog.Infof("ui: loop mode → %d", next)
-	case "r":
+		return m, nil
+	}
+
+	// Random song
+	if m.kb.Is("PlayRandomSong", keyStr) {
 		if len(m.songs) == 0 {
-			break
+			return m, nil
 		}
 		idx := rand.Intn(len(m.songs))
 		jlog.Infof("ui: random song index=%d title=%q", idx, m.songs[idx].DisplayTitle())
@@ -590,21 +683,56 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.scursor = idx
 		m.clampSongScroll()
 		return m, tea.Batch(m.downloadIfNeeded(idx), m.startViz(0))
-	case "R":
+	}
+
+	// Shuffle
+	if m.kb.Is("Shuffle", keyStr) {
 		m.p.SetShuffle(!m.p.IsShuffle())
 		jlog.Infof("ui: shuffle → %v", m.p.IsShuffle())
-	case "d":
+		return m, nil
+	}
+
+	// Download
+	if m.kb.Is("RedownloadCurrentSong", keyStr) || keyStr == "d" {
 		_, realIdx := m.filterSong(m.scursor)
 		jlog.Infof("ui: download requested index=%d url=%q", realIdx, m.songs[realIdx].URL)
 		return m, m.startDownload(realIdx)
-	case "/":
+	}
+
+	// Show/hide playlist (toggle between default and all views)
+	if m.kb.Is("ShowHidePlaylist", keyStr) {
+		if m.view == viewDefault {
+			m.view = viewAll
+		} else if m.view == viewAll {
+			m.view = viewDefault
+		}
+		return m, nil
+	}
+
+	// Help
+	if m.kb.Is("Help", keyStr) {
+		m.view = viewHelp
+		return m, nil
+	}
+
+	// Settings
+	if m.kb.Is("Settings", keyStr) {
+		m.view = viewSettings
+		return m, nil
+	}
+
+	// Search/filter
+	if m.kb.Is("Search", keyStr) || m.kb.Is("SearchInPlaylist", keyStr) || keyStr == "/" {
 		m.filtering = true
 		m.filter = ""
 		m.filteredIdxs = nil
 		m.scursor = 0
 		m.soffset = 0
 		return m, nil
-	case "esc":
+	}
+
+	// Clear filter
+	if keyStr == "esc" {
 		if m.filter != "" || m.filteredIdxs != nil {
 			m.filter = ""
 			m.filteredIdxs = nil
@@ -612,13 +740,53 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.soffset = 0
 			m.clampSongScroll()
 		}
-	case "delete":
+		return m, nil
+	}
+
+	// Delete from playlist
+	if m.kb.Is("DeleteCurrentSong", keyStr) {
 		_, realIdx := m.filterSong(m.scursor)
 		return m.removeSong(realIdx, false), nil
-	case "shift+delete":
+	}
+
+	// Hard delete (remove from disk)
+	if m.kb.Is("HardDeleteCurrentSong", keyStr) {
 		_, realIdx := m.filterSong(m.scursor)
 		return m.removeSong(realIdx, true), nil
 	}
+
+	// Go to song start
+	if m.kb.Is("ToSongStart", keyStr) {
+		m.p.SeekBackward(m.pos) // Seek back to beginning
+		jlog.Infof("ui: seek to start")
+		return m, nil
+	}
+
+	// Go to song end
+	if m.kb.Is("ToSongEnd", keyStr) {
+		m.p.SeekForward(m.dur - m.pos) // Seek to end
+		jlog.Infof("ui: seek to end")
+		return m, nil
+	}
+
+	// Toggle info
+	if m.kb.Is("ToggleInfo", keyStr) || m.kb.Is("CurrentState", keyStr) {
+		m.view = viewInfo
+		return m, nil
+	}
+
+	// Rename song
+	if m.kb.Is("RenameSong", keyStr) {
+		m.view = viewRename
+		return m, nil
+	}
+
+	// Add song to playlist
+	if m.kb.Is("AddSongToPlaylist", keyStr) {
+		m.view = viewAddSong
+		return m, nil
+	}
+
 	return m, nil
 }
 
@@ -700,7 +868,7 @@ func (m Model) handlePlaylistKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.pcursor >= 0 && m.pcursor < len(m.playlists) {
 			jlog.Infof("ui: loading playlist %q", m.playlists[m.pcursor])
 			m.loadPlaylist(m.playlists[m.pcursor])
-			m.view = viewSongs
+			m.view = viewDefault
 			m.scursor = 0
 			m.soffset = 0
 		}
@@ -963,7 +1131,7 @@ func (m Model) View() tea.View {
 	// ── Tabs ──────────────────────────────────────────────────────────────────
 	songs := styleTabInactive.Render("Songs")
 	pls := styleTabInactive.Render("Playlists")
-	if m.view == viewSongs {
+	if m.view == viewDefault || m.view == viewAll {
 		songs = styleTabActive.Render("Songs")
 	} else {
 		pls = styleTabActive.Render("Playlists")
