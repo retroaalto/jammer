@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,7 @@ const (
 	viewConfirmConvert                 // prompt to convert legacy playlist
 	viewHelp                           // help screen (Phase 5)
 	viewSettings                       // settings screen (Phase 6)
+	viewSettingsInput                  // text input for a settings value (Phase 6)
 	viewRename                         // rename song input (Phase 7)
 	viewInfo                           // song info overlay (Phase 7)
 	viewAddSong                        // add song input (Phase 7)
@@ -191,8 +193,10 @@ type Model struct {
 	lastErrTime time.Time // when lastError was set; cleared after 8 s by tickMsg
 
 	// Phase 7: modal inputs
-	modalInput string // current text in modal dialogs (rename, add song, etc.)
-	modalIdx   int    // index for rename/info view (which song)
+	modalInput          string // current text in modal dialogs (rename, add song, etc.)
+	modalIdx            int    // index for rename/info view (which song)
+	settingsInputIdx    int    // which settings item is being edited (0-indexed)
+	settingsInputPrompt string // prompt label shown above the input
 }
 
 func New(p *player.Player, songsDir, plsDir string, seekStep int, defaultView string, kb *keybinds.Keybinds, prefs Prefs) Model {
@@ -500,6 +504,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Settings screen navigation
 	if m.view == viewSettings {
 		return m.handleSettingsKey(msg)
+	}
+	if m.view == viewSettingsInput {
+		return m.handleSettingsInputKey(msg)
 	}
 
 	// Phase 7: Modal views
@@ -1208,6 +1215,8 @@ func (m Model) View() tea.View {
 		b.WriteString(m.renderHelp())
 	case viewSettings:
 		b.WriteString(m.renderSettings())
+	case viewSettingsInput:
+		b.WriteString(m.renderSettingsInput())
 	case viewRename:
 		b.WriteString(m.renderRename())
 	case viewInfo:
@@ -1933,8 +1942,43 @@ func (m Model) handleSettingsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // applySettingAction toggles or changes the setting at index idx.
+// For numeric/string settings it opens the text-input overlay instead of
+// toggling immediately.
 func (m Model) applySettingAction(idx int) Model {
 	switch idx {
+	// Numeric/string inputs — open the input overlay
+	case 0: // Forward seconds
+		m.settingsInputIdx = idx
+		m.settingsInputPrompt = "Enter Forward seconds (number):"
+		m.modalInput = fmt.Sprintf("%d", m.prefs.ForwardSeconds)
+		m.view = viewSettingsInput
+		return m
+	case 1: // Rewind seconds
+		m.settingsInputIdx = idx
+		m.settingsInputPrompt = "Enter Rewind seconds (number):"
+		m.modalInput = fmt.Sprintf("%d", m.prefs.RewindSeconds)
+		m.view = viewSettingsInput
+		return m
+	case 2: // Change Volume By
+		m.settingsInputIdx = idx
+		m.settingsInputPrompt = "Enter Volume change % (number):"
+		m.modalInput = fmt.Sprintf("%d", int(m.prefs.ChangeVolumeBy*100))
+		m.view = viewSettingsInput
+		return m
+	case 8: // Set Soundcloud Client ID
+		m.settingsInputIdx = idx
+		m.settingsInputPrompt = "Enter Soundcloud Client ID:"
+		m.modalInput = m.prefs.ClientID
+		m.view = viewSettingsInput
+		return m
+	case 14: // Amount of time to skip Rss
+		m.settingsInputIdx = idx
+		m.settingsInputPrompt = "Enter amount of time to skip Rss (number):"
+		m.modalInput = fmt.Sprintf("%d", m.prefs.RssSkipAfterTimeValue)
+		m.view = viewSettingsInput
+		return m
+
+	// Toggles
 	case 3: // Playlist Auto Save
 		m.prefs.IsAutoSave = !m.prefs.IsAutoSave
 	case 5: // Toggle Media Buttons
@@ -2336,6 +2380,81 @@ func truncate(s string, max int) string {
 func DefaultPlaylistsDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "jammer", "playlists")
+}
+
+// renderSettingsInput renders the text-input overlay for changing a settings value.
+func (m Model) renderSettingsInput() string {
+	var inner strings.Builder
+	inner.WriteString(styleTitle.Render(" "+m.settingsInputPrompt) + "\n")
+	inner.WriteString(styleHelp.Render(strings.Repeat("─", m.width-6)) + "\n")
+	inner.WriteString("\n")
+	cursor := styleBarFill.Render("█")
+	inner.WriteString(styleHelp.Render("  ") + m.modalInput + cursor + "\n")
+	inner.WriteString("\n")
+	inner.WriteString(styleHelp.Render(strings.Repeat("─", m.width-6)) + "\n")
+	inner.WriteString(styleHelp.Render("  Enter: confirm  ESC: cancel") + "\n")
+	return m.renderOuterBox(m.currentSongPath(), inner.String())
+}
+
+// handleSettingsInputKey handles key input on the settings text-input overlay.
+func (m Model) handleSettingsInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	if keyStr == "esc" {
+		m.view = viewSettings
+		m.modalInput = ""
+		return m, nil
+	}
+
+	if keyStr == "enter" {
+		m = m.commitSettingsInput()
+		m.view = viewSettings
+		m.modalInput = ""
+		return m, nil
+	}
+
+	if keyStr == "backspace" && len([]rune(m.modalInput)) > 0 {
+		runes := []rune(m.modalInput)
+		m.modalInput = string(runes[:len(runes)-1])
+		return m, nil
+	}
+
+	// Accept printable ASCII
+	if len(keyStr) == 1 && keyStr[0] >= 32 && keyStr[0] <= 126 {
+		m.modalInput += keyStr
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// commitSettingsInput parses modalInput and writes it into the correct Prefs field.
+func (m Model) commitSettingsInput() Model {
+	input := strings.TrimSpace(m.modalInput)
+	switch m.settingsInputIdx {
+	case 0: // Forward seconds
+		if v, err := strconv.Atoi(input); err == nil && v > 0 {
+			m.prefs.ForwardSeconds = v
+		}
+	case 1: // Rewind seconds
+		if v, err := strconv.Atoi(input); err == nil && v > 0 {
+			m.prefs.RewindSeconds = v
+		}
+	case 2: // Change Volume By (entered as integer percent)
+		if v, err := strconv.Atoi(input); err == nil && v > 0 {
+			m.prefs.ChangeVolumeBy = float64(v) / 100
+		}
+	case 8: // Soundcloud Client ID
+		m.prefs.ClientID = input
+	case 14: // Amount of time to skip Rss
+		if v, err := strconv.Atoi(input); err == nil && v > 0 {
+			m.prefs.RssSkipAfterTimeValue = v
+		}
+	}
+	if m.prefs.SettingsPath != "" {
+		saveSettings(m.prefs)
+	}
+	return m
 }
 
 // saveSettings writes the changed Prefs back to settings.json while preserving
