@@ -674,15 +674,23 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Seek forward
 	if m.kb.Is("Forward5s", keyStr) || keyStr == "right" || keyStr == "l" {
-		m.p.SeekForward(float64(m.seekStep))
-		jlog.Infof("ui: seek +%ds", m.seekStep)
+		fwd := m.prefs.ForwardSeconds
+		if fwd <= 0 {
+			fwd = m.seekStep
+		}
+		m.p.SeekForward(float64(fwd))
+		jlog.Infof("ui: seek +%ds", fwd)
 		return m, nil
 	}
 
 	// Seek backward
 	if m.kb.Is("Backwards5s", keyStr) || keyStr == "left" {
-		m.p.SeekBackward(float64(m.seekStep))
-		jlog.Infof("ui: seek -%ds", m.seekStep)
+		bwd := m.prefs.RewindSeconds
+		if bwd <= 0 {
+			bwd = m.seekStep
+		}
+		m.p.SeekBackward(float64(bwd))
+		jlog.Infof("ui: seek -%ds", bwd)
 		return m, nil
 	}
 
