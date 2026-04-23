@@ -116,6 +116,28 @@ var (
 				Foreground(lipgloss.Color("241"))
 )
 
+// Precomputed gradient palette for the visualizer (green → yellow → red).
+var vizPalette = func() []lipgloss.Style {
+	p := make([]lipgloss.Style, 32)
+	for i := 0; i < 32; i++ {
+		h := float64(i) / 31.0
+		var r, g int
+		if h < 0.5 {
+			// green → yellow
+			t := h * 2
+			r = int(255 * t)
+			g = 255
+		} else {
+			// yellow → red
+			t := (h - 0.5) * 2
+			r = 255
+			g = int(255 * (1 - t))
+		}
+		p[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("#%02X%02X00", r, g)))
+	}
+	return p
+}()
+
 // ── Model ─────────────────────────────────────────────────────────────────────
 
 // Prefs holds all user-configurable settings mirrored from settings.json.
@@ -1664,8 +1686,7 @@ func (m Model) renderSettings() string {
 		{"Toggle Media Buttons", boolStr(m.prefs.IsMediaButtons), "F To Toggle"},
 		// Page 2 (G-L)
 		{"Toggle Visualizer", boolStr(m.prefs.IsVisualizer), "G To Toggle Visualizer"},
-		{"Load Visualizer", "", "H To Load Visualizer settings"},
-		{"Set Soundcloud Client ID", "", "I To Set Soundcloud Client ID"},
+		{"Set Soundcloud Client ID", "", "H To Set Soundcloud Client ID"},
 		{"Fetch Client ID", "", "J To Fetch and set Soundcloud Client ID"},
 		{"Toggle Key Modifier Helpers", boolStr(m.prefs.ModifierKeyHelper), "K To Toggle Key Helpers (restart required)"},
 		{"Toggle Skip Errors", boolStr(m.prefs.IsIgnoreErrors), "L To Toggle Skip Errors"},
@@ -1967,13 +1988,13 @@ func (m Model) applySettingAction(idx int) Model {
 		m.modalInput = fmt.Sprintf("%d", int(m.prefs.ChangeVolumeBy*100))
 		m.view = viewSettingsInput
 		return m
-	case 8: // Set Soundcloud Client ID
+	case 7: // Set Soundcloud Client ID
 		m.settingsInputIdx = idx
 		m.settingsInputPrompt = "Enter Soundcloud Client ID:"
 		m.modalInput = m.prefs.ClientID
 		m.view = viewSettingsInput
 		return m
-	case 14: // Amount of time to skip Rss
+	case 13: // Amount of time to skip Rss
 		m.settingsInputIdx = idx
 		m.settingsInputPrompt = "Enter amount of time to skip Rss (number):"
 		m.modalInput = fmt.Sprintf("%d", m.prefs.RssSkipAfterTimeValue)
@@ -1987,19 +2008,19 @@ func (m Model) applySettingAction(idx int) Model {
 		m.prefs.IsMediaButtons = !m.prefs.IsMediaButtons
 	case 6: // Toggle Visualizer
 		m.prefs.IsVisualizer = !m.prefs.IsVisualizer
-	case 10: // Toggle Key Modifier Helpers
+	case 9: // Toggle Key Modifier Helpers
 		m.prefs.ModifierKeyHelper = !m.prefs.ModifierKeyHelper
-	case 11: // Toggle Skip Errors
+	case 10: // Toggle Skip Errors
 		m.prefs.IsIgnoreErrors = !m.prefs.IsIgnoreErrors
-	case 12: // Toggle Playlist Position
+	case 11: // Toggle Playlist Position
 		m.prefs.ShowPlaylistPosition = !m.prefs.ShowPlaylistPosition
-	case 13: // Skip Rss after some time
+	case 12: // Skip Rss after some time
 		m.prefs.RssSkipAfterTime = !m.prefs.RssSkipAfterTime
-	case 15: // Toggle Quick Search
+	case 14: // Toggle Quick Search
 		m.prefs.EnableQuickSearch = !m.prefs.EnableQuickSearch
-	case 16: // Favorite Explainer
+	case 15: // Favorite Explainer
 		m.prefs.FavoriteExplainer = !m.prefs.FavoriteExplainer
-	case 17: // Toggle Quick Play From Search
+	case 16: // Toggle Quick Play From Search
 		m.prefs.EnableQuickPlayFromSearch = !m.prefs.EnableQuickPlayFromSearch
 	}
 	if m.prefs.SettingsPath != "" {
@@ -2163,12 +2184,10 @@ func (m Model) renderAddSong() string {
 // renderVisualizer renders FFT visualization bars
 func (m Model) renderVisualizer() string {
 	if len(m.vizBars) == 0 {
-		// Return placeholder visualizer if not initialized yet
 		return strings.Repeat("▁", 20)
 	}
 
 	// Scale viz bars to fill available width.
-	// Full inner width of outer box = m.width - 4 ("│ " and " │" wrappers)
 	avail := m.width - 4
 	if avail < len(m.vizBars) {
 		avail = len(m.vizBars)
@@ -2178,17 +2197,21 @@ func (m Model) renderVisualizer() string {
 		barWidth = 1
 	}
 
-	var bars []string
 	barChars := []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
 
+	var bars []string
 	for _, h := range m.vizBars {
 		idx := int(h * float64(len(barChars)-1))
 		if idx >= len(barChars) {
 			idx = len(barChars) - 1
 		}
-		bars = append(bars, strings.Repeat(string(barChars[idx]), barWidth))
+		paletteIdx := int(h * 31)
+		if paletteIdx > 31 {
+			paletteIdx = 31
+		}
+		bars = append(bars, vizPalette[paletteIdx].Render(strings.Repeat(string(barChars[idx]), barWidth)))
 	}
-	return styleBarFill.Render(strings.Join(bars, ""))
+	return strings.Join(bars, "")
 }
 
 // renderProgressBar returns formatted progress bar with state/shuffle/loop indicators.
