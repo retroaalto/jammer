@@ -11,8 +11,8 @@ A terminal music player (TUI) written in Go. Play local files, stream and downlo
 - Keyboard-driven TUI built with Bubbletea
 - On-demand download from YouTube and SoundCloud — no manual `yt-dlp` invocation needed
 - Two audio backends: pure-Go **beep** (default, no external libs) or **BASS** (wider format support)
-- Playlist browser with JSONL `.jammer`, legacy `?|`, M3U and M3U8 support
-- Automatic legacy playlist conversion prompt
+- Playlist browser with `.jammer` (classic and JSONL), M3U and M3U8 support
+- Automatic metadata enrichment written back in classic `?|` format
 - Per-song download progress shown inline (`[42%]` → `[ok]` / `[err]`)
 - Metadata (title/artist) enriched from downloader and embedded file tags, then written back:
   - **MP3** — ID3v2 via `bogem/id3v2`
@@ -139,22 +139,39 @@ Missing or zero values fall back to the defaults listed above. Unknown fields ar
 | `Tab` | Back to Songs view |
 | `q` / `Ctrl+C` | Quit |
 
-### Legacy playlist conversion prompt
-
-| Key | Action |
-|---|---|
-| `y` | Convert file to JSONL and load |
-| `n` / `Escape` | Load without converting (file stays untouched) |
-
 ---
 
 ## Playlist format
 
 Playlists are stored in `~/jammer/playlists/`.
 
-### `.jammer` — JSONL (current format)
+### `.jammer` — Classic format (default)
 
-One JSON object per line:
+One line per track using the `?|` delimiter:
+
+```
+https://soundcloud.com/artist/track?|{"Title":"Track Name","Author":"Artist"}
+https://www.youtube.com/watch?v=XXXX?|{"Title":"Video Title","Author":"Channel"}
+https://soundcloud.com/artist/another?|{}
+```
+
+Title and author are written back automatically after a successful download. The local resolved path is intentionally not persisted (it may differ between machines).
+
+Files with no metadata can use bare URLs:
+
+```
+https://soundcloud.com/artist/track
+```
+
+Local file paths are also supported:
+
+```
+/path/to/local/file.mp3
+```
+
+### `.jammer` — JSONL format (alternative)
+
+One JSON object per line. Detected and loaded automatically:
 
 ```jsonl
 {"url":"https://soundcloud.com/artist/track","title":"Track Name","author":"Artist"}
@@ -162,15 +179,7 @@ One JSON object per line:
 {"path":"/absolute/path/to/local/file.mp3"}
 ```
 
-Title and author are written back automatically after a successful download. The local resolved path is intentionally not persisted (it may differ between machines).
-
-### `.jammer` — Legacy format (read-only)
-
-```
-https://soundcloud.com/artist/track?|{"Title":"Track Name","Author":"Artist"}
-```
-
-jammer-go detects this automatically and prompts to convert. Choosing `n` loads the playlist without touching the file.
+JSONL files are read-only in the current version. Saved playlists always use the classic format.
 
 ### `.m3u` / `.m3u8` — M3U (read-only)
 

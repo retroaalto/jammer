@@ -50,7 +50,6 @@ const (
 	viewDefault        viewKind = iota // 3-song snippet (prev/current/next)
 	viewAll                            // full scrollable list
 	viewPlaylists                      // playlist browser
-	viewConfirmConvert                 // prompt to convert legacy playlist
 	viewHelp                           // help screen (Phase 5)
 	viewSettings                       // settings screen (Phase 6)
 	viewSettingsInput                  // text input for a settings value (Phase 6)
@@ -183,10 +182,6 @@ type Model struct {
 	playlists []string // filenames (basename only) in plsDir
 	pcursor   int
 	poffset   int
-
-	// legacy convert prompt
-	convertFile    string           // path of legacy playlist pending conversion
-	convertEntries []playlist.Entry // parsed entries from the legacy file
 
 	// error display
 	lastError   string    // most recent download error message (empty = none)
@@ -526,8 +521,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// ToMainMenu (Escape) - only if not in confirm convert
-	if m.kb.Is("ToMainMenu", keyStr) && m.view != viewConfirmConvert {
+	// ToMainMenu (Escape) - only if not in a modal
+	if m.kb.Is("ToMainMenu", keyStr) {
 		if m.view == viewDefault || m.view == viewAll {
 			// If not in songs view, return to default view
 			if m.view != viewDefault {
@@ -539,9 +534,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// View switching (Tab, Shift+F, Shift+O)
 	if m.kb.Is("CommandHelpScreen", keyStr) || m.kb.Is("ListAllPlaylists", keyStr) || m.kb.Is("PlayOtherPlaylist", keyStr) {
-		if m.view == viewConfirmConvert {
-			return m, nil // ignore during confirm prompt
-		}
 		if m.view == viewDefault || m.view == viewAll {
 			m.view = viewPlaylists
 			m.reloadPlaylists()
@@ -552,31 +544,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Default handler routing
-	if m.view == viewConfirmConvert {
-		return m.handleConfirmConvertKey(msg)
-	}
 	if m.view == viewPlaylists {
 		return m.handlePlaylistKey(msg)
 	}
 	return m.handleSongKey(msg)
-}
-
-func (m Model) handleConfirmConvertKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "Y":
-		// Convert: overwrite the legacy file with JSONL format.
-		_ = playlist.Save(m.convertFile, m.convertEntries)
-		jlog.Infof("convert: saved JSONL to %q", m.convertFile)
-		fallthrough
-	case "n", "N", "esc":
-		// Load entries but don't set plsFile — legacy file stays untouched
-		// and no metadata updates will be written back to it.
-		m.applyPlaylist("", m.convertEntries)
-		m.convertFile = ""
-		m.convertEntries = nil
-		m.view = viewDefault
-	}
-	return m, nil
 }
 
 func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -946,16 +917,8 @@ func (m Model) handlePlaylistKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) loadPlaylist(filename string) {
 	path := filepath.Join(m.plsDir, filename)
-	entries, legacy, err := playlist.Load(path, m.songsDir)
+	entries, _, err := playlist.Load(path, m.songsDir)
 	if err != nil {
-		return
-	}
-
-	if legacy {
-		// Don't load yet — ask the user first.
-		m.convertFile = path
-		m.convertEntries = entries
-		m.view = viewConfirmConvert
 		return
 	}
 
@@ -1166,7 +1129,14 @@ func (m *Model) clampPLScroll() {
 }
 
 func (m Model) songListHeight() int {
+	// Different overhead for different views.
+	// renderSongsDefault: top 3-song box (border + padding) + help bar (3) + visualizer (1) + progress bar (3) ≈ 14 lines
+	// renderSongsAll: same but with full list box overhead is higher. The comment in renderSongsAll
+	//   says: outer(3+1) + inner border(2) + header+sep+2 instr(4) + help bar(3) + viz(1) + prog(3) = 17
 	reserved := 14
+	if m.view == viewAll {
+		reserved = 17
+	}
 	if m.filter != "" || m.filtering {
 		reserved++ // filter prompt line
 	}
@@ -1217,8 +1187,6 @@ func (m Model) View() tea.View {
 
 	// Render based on current view
 	switch m.view {
-	case viewConfirmConvert:
-		b.WriteString(m.renderConfirmConvert())
 	case viewHelp:
 		b.WriteString(m.renderHelp())
 	case viewSettings:
@@ -1315,6 +1283,24 @@ func (m Model) songBoxTextWidth() int {
 	return m.songBoxWidth() - 2
 }
 
+func dlSuffix(m Model, idx int) string {
+	song := m.songs[idx]
+	if ds, ok := m.dlStates[idx]; ok && ds != nil {
+		switch {
+		case ds.active:
+			pct := int(ds.frac * 100)
+			return styleDLing.Render(fmt.Sprintf(" [%d%%]", pct))
+		case ds.err != nil:
+			return styleErr.Render(" [err]")
+		case ds.frac >= 1:
+			return stylePlaying.Render(" [ok]")
+		}
+	} else if !song.Downloaded() {
+		return styleNotDL.Render(" [dl]")
+	}
+	return ""
+}
+
 // formatSongLine formats a song line with the author right-aligned.
 // boxW is the usable width inside the inner box (after border+padding overhead).
 func formatSongLine(label, title, author string, boxW int) string {
@@ -1382,14 +1368,22 @@ func (m Model) renderSongsDefault() string {
 		currSong := m.songs[currIdx]
 		nextSong := m.songs[nextIdx]
 
-		prevLine := formatSongLine("previous", prevSong.DisplayTitle(), prevSong.Author, textW)
-		currLine := formatSongLine("current", currSong.DisplayTitle(), currSong.Author, textW)
-		nextLine := formatSongLine("next", nextSong.DisplayTitle(), nextSong.Author, textW)
+		prevSfx := dlSuffix(m, prevIdx)
+		currSfx := dlSuffix(m, currIdx)
+		nextSfx := dlSuffix(m, nextIdx)
+
+		prevSfxW := lipgloss.Width(prevSfx)
+		currSfxW := lipgloss.Width(currSfx)
+		nextSfxW := lipgloss.Width(nextSfx)
+
+		prevLine := styleHelp.Render(formatSongLine("previous", prevSong.DisplayTitle(), prevSong.Author, textW-prevSfxW)) + prevSfx
+		currLine := stylePlaying.Render(formatSongLine("current", currSong.DisplayTitle(), currSong.Author, textW-currSfxW)) + currSfx
+		nextLine := styleHelp.Render(formatSongLine("next", nextSong.DisplayTitle(), nextSong.Author, textW-nextSfxW)) + nextSfx
 
 		boxContent := header + "\n" + sep + "\n" +
-			styleHelp.Render(prevLine) + "\n" +
-			stylePlaying.Render(currLine) + "\n" +
-			styleHelp.Render(nextLine)
+			prevLine + "\n" +
+			currLine + "\n" +
+			nextLine
 
 		b.WriteString(boxStyle.Render(boxContent))
 		b.WriteString("\n")
@@ -2250,16 +2244,6 @@ func (m Model) renderProgressBar() string {
 }
 
 // ── Playlists view ────────────────────────────────────────────────────────────
-
-func (m Model) renderConfirmConvert() string {
-	var b strings.Builder
-	name := filepath.Base(m.convertFile)
-	b.WriteString(styleHelp.Render("  Legacy playlist format detected: "+name) + "\n\n")
-	b.WriteString("  Convert to new JSONL format? " +
-		stylePlaying.Render("y") + " yes  " +
-		styleNotDL.Render("n") + " no\n")
-	return b.String()
-}
 
 func (m Model) renderPlaylists() string {
 	var b strings.Builder

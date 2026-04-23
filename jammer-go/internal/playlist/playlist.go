@@ -30,13 +30,20 @@ func (e Entry) DisplayTitle() string {
 	return e.URL
 }
 
-// ── JSONL format ──────────────────────────────────────────────────────────────
+// ── Formats ─────────────────────────────────────────────────────────────────
 //
-// New .jammer format: one JSON object per line.
+// Classic jammer format (default):
+//   url?|{"Title":"Track","Author":"Artist"}
+//   url?|{}
+//   url
+//   /path/to/local/file
+//
+// JSONL format (alternative):
 //   {"url":"https://...","title":"Track","author":"Artist"}
 //
-// The old format used url?|{"Title":"...","Author":"..."} as a delimiter.
-// Both are detected automatically when loading.
+// Both formats are detected automatically when loading.
+// Save() writes the classic format by default.
+// SaveJSONL() writes the JSONL format.
 
 type jsonlEntry struct {
 	URL    string `json:"url"`
@@ -46,8 +53,35 @@ type jsonlEntry struct {
 	Path string `json:"path,omitempty"`
 }
 
-// Save writes entries to path in JSONL format, creating or overwriting the file.
+// Save writes entries to path in the classic jammer ?| format, creating or overwriting the file.
 func Save(path string, entries []Entry) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+	for _, e := range entries {
+		if e.URL == "" && e.Path != "" {
+			w.WriteString(e.Path)
+		} else if e.Title != "" || e.Author != "" {
+			meta := struct {
+				Title  string `json:"Title"`
+				Author string `json:"Author"`
+			}{Title: e.Title, Author: e.Author}
+			metaBytes, _ := json.Marshal(meta)
+			w.WriteString(e.URL + "?|" + string(metaBytes))
+		} else {
+			w.WriteString(e.URL)
+		}
+		w.WriteByte('\n')
+	}
+	return w.Flush()
+}
+
+// SaveJSONL writes entries to path in JSONL format, creating or overwriting the file.
+func SaveJSONL(path string, entries []Entry) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -72,9 +106,8 @@ func Save(path string, entries []Entry) error {
 }
 
 // LoadJammer parses a .jammer playlist file.
-// Supports both the new JSONL format and the legacy url?|{...} format.
-// Returns the entries, whether the file was in legacy format, and any error.
-// Legacy files are NOT auto-converted — the caller decides what to do.
+// Supports both the classic ?| format and the JSONL format.
+// Returns the entries, whether the file contained any JSONL lines, and any error.
 func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -83,7 +116,7 @@ func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 	defer f.Close()
 
 	var entries []Entry
-	legacy := false
+	jsonl := false
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -98,7 +131,8 @@ func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 		var e Entry
 
 		if strings.HasPrefix(line, "{") {
-			// ── New JSONL format ──────────────────────────────────────────
+			// ── JSONL format ──────────────────────────────────────────
+			jsonl = true
 			var je jsonlEntry
 			if err := json.Unmarshal([]byte(line), &je); err == nil {
 				e.URL = stripBOM(je.URL)
@@ -111,8 +145,7 @@ func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 				continue
 			}
 		} else {
-			// ── Legacy ?| format ──────────────────────────────────────────
-			legacy = true
+			// ── Classic ?| format ──────────────────────────────────────────
 			const delim = "?|"
 			if idx := strings.Index(line, delim); idx >= 0 {
 				rawURL := line[:idx]
@@ -148,7 +181,7 @@ func LoadJammer(path, songsDir string) ([]Entry, bool, error) {
 		return nil, false, err
 	}
 
-	return entries, legacy, nil
+	return entries, jsonl, nil
 }
 
 // LoadM3U parses a .m3u or .m3u8 playlist file.
@@ -281,7 +314,7 @@ func List(dir string) ([]string, error) {
 }
 
 // Load auto-detects format and loads a playlist file.
-// Returns the entries, whether the file was in legacy format, and any error.
+// Returns the entries, whether the file contained any JSONL lines, and any error.
 func Load(path, songsDir string) ([]Entry, bool, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {

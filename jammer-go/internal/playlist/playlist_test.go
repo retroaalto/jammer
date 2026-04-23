@@ -3,7 +3,6 @@ package playlist_test
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
@@ -220,15 +219,15 @@ func TestList(t *testing.T) {
 	}
 }
 
-// ── JSONL round-trip ──────────────────────────────────────────────────────────
+// ── Classic format round-trip ──────────────────────────────────────────────────
 
-func TestJSONLRoundTrip(t *testing.T) {
+func TestClassicRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jammer")
 
 	original := []playlist.Entry{
 		{URL: "https://soundcloud.com/a/b", Title: "Track One", Author: "Artist A"},
-		{URL: "https://soundcloud.com/c/d", Title: "Track | Two | pipes", Author: "Artist B"},
+		{URL: "https://soundcloud.com/c/d", Title: "Track Two", Author: "Artist B"},
 		{URL: "https://soundcloud.com/e/f", Title: "", Author: ""},
 	}
 
@@ -236,9 +235,12 @@ func TestJSONLRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loaded, _, err := playlist.LoadJammer(path, dir)
+	loaded, jsonl, err := playlist.LoadJammer(path, dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if jsonl {
+		t.Error("expected jsonl=false for classic format file")
 	}
 	if len(loaded) != len(original) {
 		t.Fatalf("want %d entries, got %d", len(original), len(loaded))
@@ -256,14 +258,50 @@ func TestJSONLRoundTrip(t *testing.T) {
 	}
 }
 
-func TestJSONLLegacyCompat(t *testing.T) {
+func TestSaveJSONLRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "legacy.jammer")
-	// Old ?| format line
+	path := filepath.Join(dir, "test.jammer")
+
+	original := []playlist.Entry{
+		{URL: "https://soundcloud.com/a/b", Title: "Track One", Author: "Artist A"},
+		{URL: "https://soundcloud.com/c/d", Title: "Track Two", Author: "Artist B"},
+		{URL: "https://soundcloud.com/e/f", Title: "", Author: ""},
+	}
+
+	if err := playlist.SaveJSONL(path, original); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, jsonl, err := playlist.LoadJammer(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !jsonl {
+		t.Error("expected jsonl=true for JSONL format file")
+	}
+	if len(loaded) != len(original) {
+		t.Fatalf("want %d entries, got %d", len(original), len(loaded))
+	}
+	for i, e := range loaded {
+		if e.URL != original[i].URL {
+			t.Errorf("[%d] URL: want %q got %q", i, original[i].URL, e.URL)
+		}
+		if e.Title != original[i].Title {
+			t.Errorf("[%d] Title: want %q got %q", i, original[i].Title, e.Title)
+		}
+		if e.Author != original[i].Author {
+			t.Errorf("[%d] Author: want %q got %q", i, original[i].Author, e.Author)
+		}
+	}
+}
+
+func TestClassicCompat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "classic.jammer")
 	content := `https://soundcloud.com/author/track?|{"Title":"My Track","Author":"DJ Test"}` + "\n"
 	os.WriteFile(path, []byte(content), 0o644)
 
-	entries, _, err := playlist.LoadJammer(path, dir)
+	entries, jsonl, err := playlist.LoadJammer(path, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,19 +314,7 @@ func TestJSONLLegacyCompat(t *testing.T) {
 	if entries[0].Author != "DJ Test" {
 		t.Errorf("Author: got %q", entries[0].Author)
 	}
-
-	// File should NOT be auto-converted; conversion is opt-in via the UI.
-	raw, _ := os.ReadFile(path)
-	if !strings.Contains(string(raw), "?|") {
-		t.Errorf("expected legacy file to be left untouched, but legacy delimiter is gone:\n%s", raw)
-	}
-
-	// The legacy bool return should be true.
-	_, legacy, err2 := playlist.LoadJammer(path, dir)
-	if err2 != nil {
-		t.Fatal(err2)
-	}
-	if !legacy {
-		t.Error("expected legacy=true for a file with the old ?| format")
+	if jsonl {
+		t.Error("expected jsonl=false for classic ?| format")
 	}
 }
