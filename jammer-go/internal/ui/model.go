@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -127,9 +128,11 @@ type Model struct {
 	autoPlay bool // play index 0 on Init (set when launched with -p)
 
 	// view
-	view   viewKind
-	width  int
-	height int
+	view           viewKind
+	helpPageNum    int // current page in help screen (0-indexed)
+	settingsCursor int // current settings item cursor (0-indexed)
+	width          int
+	height         int
 
 	// songs view
 	songs       []player.Song
@@ -163,6 +166,10 @@ type Model struct {
 	// error display
 	lastError   string    // most recent download error message (empty = none)
 	lastErrTime time.Time // when lastError was set; cleared after 8 s by tickMsg
+
+	// Phase 7: modal inputs
+	modalInput string // current text in modal dialogs (rename, add song, etc.)
+	modalIdx   int    // index for rename/info view (which song)
 }
 
 func New(p *player.Player, songsDir, plsDir string, seekStep int, defaultView string, kb *keybinds.Keybinds) Model {
@@ -459,6 +466,27 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	jlog.Key(msg.String(), viewName)
 
 	keyStr := msg.String()
+
+	// Help screen navigation
+	if m.view == viewHelp {
+		return m.handleHelpKey(msg)
+	}
+
+	// Settings screen navigation
+	if m.view == viewSettings {
+		return m.handleSettingsKey(msg)
+	}
+
+	// Phase 7: Modal views
+	if m.view == viewRename {
+		return m.handleRenameKey(msg)
+	}
+	if m.view == viewInfo {
+		return m.handleInfoKey(msg)
+	}
+	if m.view == viewAddSong {
+		return m.handleAddSongKey(msg)
+	}
 
 	// Quit
 	if m.kb.Is("Quit", keyStr) {
@@ -1138,12 +1166,25 @@ func (m Model) View() tea.View {
 	}
 	b.WriteString(styleTitle.Render("  jammer") + "  " + songs + "  " + pls + "\n\n")
 
+	// Render based on current view
 	if m.view == viewConfirmConvert {
 		b.WriteString(m.renderConfirmConvert())
 	} else if m.view == viewPlaylists {
 		b.WriteString(m.renderPlaylists())
-	} else {
-		b.WriteString(m.renderSongs())
+	} else if m.view == viewHelp {
+		b.WriteString(m.renderHelp())
+	} else if m.view == viewSettings {
+		b.WriteString(m.renderSettings())
+	} else if m.view == viewDefault {
+		b.WriteString(m.renderSongsDefault())
+	} else if m.view == viewAll {
+		b.WriteString(m.renderSongsAll())
+	} else if m.view == viewRename {
+		b.WriteString(m.renderRename())
+	} else if m.view == viewInfo {
+		b.WriteString(m.renderInfo())
+	} else if m.view == viewAddSong {
+		b.WriteString(m.renderAddSong())
 	}
 
 	v := tea.NewView(b.String())
@@ -1153,7 +1194,79 @@ func (m Model) View() tea.View {
 
 // ── Songs view ────────────────────────────────────────────────────────────────
 
-func (m Model) renderSongs() string {
+func (m Model) renderSongsDefault() string {
+	var b strings.Builder
+
+	// Render 3-song snippet (prev / current / next)
+	if len(m.songs) == 0 {
+		b.WriteString(styleHelp.Render("  No songs loaded\n"))
+	} else {
+		// Build the 3-song display
+		prevIdx := m.playing - 1
+		if prevIdx < 0 {
+			prevIdx = len(m.songs) - 1 // wrap around
+		}
+		currIdx := m.playing
+		nextIdx := m.playing + 1
+		if nextIdx >= len(m.songs) {
+			nextIdx = 0 // wrap around
+		}
+
+		// Draw bordered box with 3-song snippet
+		b.WriteString(lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("61")).
+			Padding(0, 1).
+			Width(m.width - 8).
+			Render(fmt.Sprintf("playlist %s", filepath.Base(m.plsFile))))
+		b.WriteString("\n")
+
+		// Previous song
+		prevTitle := truncate(m.songs[prevIdx].DisplayTitle(), m.width-20)
+		b.WriteString(styleHelp.Render(fmt.Sprintf(" previous : %s\n", prevTitle)))
+
+		// Current song (highlighted)
+		currTitle := truncate(m.songs[currIdx].DisplayTitle(), m.width-20)
+		b.WriteString(stylePlaying.Render(fmt.Sprintf(" current  : %s\n", currTitle)))
+
+		// Next song
+		nextTitle := truncate(m.songs[nextIdx].DisplayTitle(), m.width-20)
+		b.WriteString(styleHelp.Render(fmt.Sprintf(" next     : %s\n", nextTitle)))
+	}
+
+	// Spacer rows to fill screen
+	lines := 3 + 10 // header + song box + spacer + progress + help
+	for i := lines; i < m.height-10; i++ {
+		b.WriteString("\n")
+	}
+
+	// Mini help bar
+	b.WriteString(lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("61")).
+		Padding(0, 1).
+		Width(m.width - 8).
+		Render("[H] for help | [C] for settings | [F] for playlist"))
+	b.WriteString("\n")
+
+	// Visualizer row
+	b.WriteString(" ")
+	b.WriteString(m.renderVisualizer())
+	b.WriteString("\n")
+
+	// Progress/time bar
+	b.WriteString(lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("61")).
+		Padding(0, 1).
+		Width(m.width - 8).
+		Render(m.renderProgressBar()))
+	b.WriteString("\n")
+
+	return b.String()
+}
+
+func (m Model) renderSongsAll() string {
 	var b strings.Builder
 
 	// Filter prompt (shown above the list when filtering or a filter is active).
@@ -1264,6 +1377,483 @@ func (m Model) renderSongs() string {
 	b.WriteString(styleHelp.Render(" space/enter: play/pause  s: stop  n: next  p: prev  r: random  R: shuffle  d: download") + "\n")
 	b.WriteString(styleHelp.Render(fmt.Sprintf(" /: filter  ←/→: seek %ds  +/-: vol  L: loop  del: remove  S+del: +file  tab: playlists  q: quit", m.seekStep)) + "\n")
 	return b.String()
+}
+
+// renderHelp returns the help screen with paginated keybindings
+func (m Model) renderHelp() string {
+	var b strings.Builder
+
+	// All keybindings to display
+	allBindings := m.getHelpBindings()
+
+	// Calculate pages (10 keybindings per page, 2 columns = 20 per page)
+	itemsPerPage := 20
+	totalPages := (len(allBindings) + itemsPerPage - 1) / itemsPerPage
+
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
+	// Clamp page number
+	page := m.helpPageNum
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+	if page < 0 {
+		page = 0
+	}
+
+	// Get items for this page
+	start := page * itemsPerPage
+	end := start + itemsPerPage
+	if end > len(allBindings) {
+		end = len(allBindings)
+	}
+	pageItems := allBindings[start:end]
+
+	// Render header
+	pageIndicator := fmt.Sprintf("(%d/%d)", page+1, totalPages)
+	b.WriteString(styleTitle.Render(fmt.Sprintf("  Keybindings %s\n", pageIndicator)))
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	// Render 2-column table
+	// Split items into left and right columns
+	mid := (len(pageItems) + 1) / 2
+
+	for i := 0; i < mid; i++ {
+		// Left column
+		leftItem := pageItems[i]
+		leftKey := keybinds.GetDisplay(leftItem.key)
+		leftDesc := truncate(leftItem.desc, 25)
+		left := fmt.Sprintf("  %-30s %-25s", leftKey, leftDesc)
+
+		// Right column
+		var right string
+		if i+mid < len(pageItems) {
+			rightItem := pageItems[i+mid]
+			rightKey := keybinds.GetDisplay(rightItem.key)
+			rightDesc := truncate(rightItem.desc, 25)
+			right = fmt.Sprintf("  %-30s %-25s", rightKey, rightDesc)
+		}
+
+		b.WriteString(styleHelp.Render(left + right + "\n"))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  ←/→: prev/next page  ESC: back  q: quit\n"))
+
+	return b.String()
+}
+
+// renderSettings renders the settings screen (Phase 6)
+func (m Model) renderSettings() string {
+	var b strings.Builder
+
+	// Render header
+	b.WriteString(styleTitle.Render("  Settings\n"))
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	// Settings list
+	settings := []struct {
+		name  string
+		value string
+	}{
+		{"Seek step", "5s"},
+		{"Volume step", "5%"},
+		{"Auto-save", "on"},
+		{"Visualizer", "on"},
+		{"Default view", "3-song"},
+	}
+
+	// Clamp cursor
+	if m.settingsCursor >= len(settings) {
+		m.settingsCursor = len(settings) - 1
+	}
+	if m.settingsCursor < 0 {
+		m.settingsCursor = 0
+	}
+
+	for i, s := range settings {
+		line := fmt.Sprintf("  %-20s: %s", s.name, s.value)
+		if i == m.settingsCursor {
+			b.WriteString(styleSelected.Render(line) + "\n")
+		} else {
+			b.WriteString(styleHelp.Render(line) + "\n")
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  ↑/↓: navigate  ESC: back  q: quit\n"))
+
+	return b.String()
+}
+
+// getHelpBindings returns a sorted list of all keybindings for the help screen
+func (m Model) getHelpBindings() []struct {
+	action string
+	key    string
+	desc   string
+} {
+	allBindings := m.kb.GetAll()
+
+	// Map of action → description
+	descriptions := map[string]string{
+		"PlayPause":              "Play/Pause",
+		"NextSong":               "Next song",
+		"PreviousSong":           "Previous song",
+		"Quit":                   "Quit",
+		"Help":                   "Show help",
+		"Settings":               "Settings",
+		"ToMainMenu":             "Main menu",
+		"Forward5s":              "Seek forward",
+		"Backwards5s":            "Seek backward",
+		"VolumeUp":               "Volume up",
+		"VolumeDown":             "Volume down",
+		"VolumeUpByOne":          "Volume +1%",
+		"VolumeDownByOne":        "Volume -1%",
+		"Mute":                   "Toggle mute",
+		"Shuffle":                "Shuffle",
+		"PlayRandomSong":         "Random song",
+		"Loop":                   "Loop mode",
+		"ShowHidePlaylist":       "Toggle playlist view",
+		"ListAllPlaylists":       "All playlists",
+		"PlayOtherPlaylist":      "Other playlist",
+		"DeleteCurrentSong":      "Delete song",
+		"HardDeleteCurrentSong":  "Delete from disk",
+		"RedownloadCurrentSong":  "Redownload",
+		"Search":                 "Search",
+		"SearchInPlaylist":       "Search in playlist",
+		"ToSongStart":            "Go to start",
+		"ToSongEnd":              "Go to end",
+		"ToggleInfo":             "Toggle info",
+		"CurrentState":           "Current state",
+		"RenameSong":             "Rename song",
+		"AddSongToPlaylist":      "Add song",
+		"PlaylistViewScrollup":   "Scroll up",
+		"PlaylistViewScrolldown": "Scroll down",
+		"CommandHelpScreen":      "Keyboard help",
+	}
+
+	var result []struct {
+		action string
+		key    string
+		desc   string
+	}
+
+	// Build list, sorted by action name
+	for action, key := range allBindings {
+		desc, exists := descriptions[action]
+		if !exists {
+			desc = action
+		}
+		result = append(result, struct {
+			action string
+			key    string
+			desc   string
+		}{action, key, desc})
+	}
+
+	// Sort by description
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].desc < result[j].desc
+	})
+
+	return result
+}
+
+// handleHelpKey handles key input on the help screen
+func (m Model) handleHelpKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	if keyStr == "esc" || m.kb.Is("ToMainMenu", keyStr) {
+		m.view = viewDefault
+		m.helpPageNum = 0
+		return m, nil
+	}
+
+	if keyStr == "left" || m.kb.Is("PlaylistViewScrollup", keyStr) {
+		if m.helpPageNum > 0 {
+			m.helpPageNum--
+		}
+		return m, nil
+	}
+
+	if keyStr == "right" || m.kb.Is("PlaylistViewScrolldown", keyStr) {
+		m.helpPageNum++
+		return m, nil
+	}
+
+	if keyStr == "q" || m.kb.Is("Quit", keyStr) {
+		m.p.Stop()
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
+// handleSettingsKey handles key input on the settings screen
+func (m Model) handleSettingsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	if keyStr == "esc" || m.kb.Is("ToMainMenu", keyStr) {
+		m.view = viewDefault
+		m.settingsCursor = 0
+		return m, nil
+	}
+
+	if keyStr == "q" || m.kb.Is("Quit", keyStr) {
+		m.p.Stop()
+		return m, tea.Quit
+	}
+
+	// Navigation with up/down
+	if keyStr == "up" || m.kb.Is("PlaylistViewScrollup", keyStr) {
+		if m.settingsCursor > 0 {
+			m.settingsCursor--
+		}
+		return m, nil
+	}
+
+	if keyStr == "down" || m.kb.Is("PlaylistViewScrolldown", keyStr) {
+		// 5 settings items
+		if m.settingsCursor < 4 {
+			m.settingsCursor++
+		}
+		return m, nil
+	}
+
+	// Phase 6 placeholder: settings values can be adjusted with left/right later
+	return m, nil
+}
+
+// handleRenameKey handles key input on the rename dialog
+func (m Model) handleRenameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	if keyStr == "esc" {
+		m.view = viewDefault
+		m.modalInput = ""
+		m.modalIdx = -1
+		return m, nil
+	}
+
+	if keyStr == "enter" {
+		// TODO: Actually rename the song
+		// For now, just close the dialog
+		m.view = viewDefault
+		m.modalInput = ""
+		m.modalIdx = -1
+		return m, nil
+	}
+
+	// Character input
+	if len(keyStr) == 1 && (keyStr[0] >= 32 && keyStr[0] <= 126) {
+		m.modalInput += keyStr
+		return m, nil
+	}
+
+	// Backspace
+	if keyStr == "backspace" && len(m.modalInput) > 0 {
+		m.modalInput = m.modalInput[:len(m.modalInput)-1]
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleInfoKey handles key input on the info dialog
+func (m Model) handleInfoKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	if keyStr == "esc" || keyStr == "q" {
+		m.view = viewDefault
+		m.modalIdx = -1
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleAddSongKey handles key input on the add song dialog
+func (m Model) handleAddSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	if keyStr == "esc" {
+		m.view = viewDefault
+		m.modalInput = ""
+		return m, nil
+	}
+
+	if keyStr == "enter" {
+		// TODO: Actually add the song to the playlist
+		// For now, just close the dialog
+		m.view = viewDefault
+		m.modalInput = ""
+		return m, nil
+	}
+
+	// Character input - allow URLs and paths
+	if len(keyStr) == 1 && (keyStr[0] >= 32 && keyStr[0] <= 126) {
+		m.modalInput += keyStr
+		return m, nil
+	}
+
+	// Backspace
+	if keyStr == "backspace" && len(m.modalInput) > 0 {
+		m.modalInput = m.modalInput[:len(m.modalInput)-1]
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// ── Phase 7: Modal Views ──────────────────────────────────────────────────────
+
+// renderRename renders the rename song dialog
+func (m Model) renderRename() string {
+	var b strings.Builder
+
+	b.WriteString(styleTitle.Render("  Rename Song\n"))
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	if m.modalIdx >= 0 && m.modalIdx < len(m.songs) {
+		currentName := m.songs[m.modalIdx].DisplayTitle()
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  Current: %s\n\n", currentName)))
+	}
+
+	// Input line
+	cursor := styleBarFill.Render("█")
+	b.WriteString(styleHelp.Render("  New name: ") + m.modalInput + cursor + "\n")
+
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Enter: confirm  ESC: cancel\n"))
+
+	return b.String()
+}
+
+// renderInfo renders the song information overlay
+func (m Model) renderInfo() string {
+	var b strings.Builder
+
+	b.WriteString(styleTitle.Render("  Song Information\n"))
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	if m.modalIdx >= 0 && m.modalIdx < len(m.songs) {
+		song := m.songs[m.modalIdx]
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  Title:    %s\n", song.DisplayTitle())))
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  Author:   %s\n", song.Author)))
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  URL:      %s\n", song.URL)))
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  File:     %s\n", filepath.Base(song.Path))))
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  Downloaded: %v\n", song.Downloaded())))
+	} else {
+		b.WriteString(styleHelp.Render("  No song selected\n"))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  ESC: close\n"))
+
+	return b.String()
+}
+
+// renderAddSong renders the add song input dialog
+func (m Model) renderAddSong() string {
+	var b strings.Builder
+
+	b.WriteString(styleTitle.Render("  Add Song\n"))
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Enter URL or file path to add to playlist\n\n"))
+
+	// Input line
+	cursor := styleBarFill.Render("█")
+	b.WriteString(styleHelp.Render("  ") + m.modalInput + cursor + "\n")
+
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Enter: add  ESC: cancel\n"))
+
+	return b.String()
+}
+
+// ── Visualizer ────────────────────────────────────────────────────────────────
+
+// renderVisualizer renders FFT visualization bars
+func (m Model) renderVisualizer() string {
+	if len(m.vizBars) == 0 {
+		return ""
+	}
+
+	// Scale viz bars to fit available width (rough estimation)
+	barWidth := (m.width - 10) / len(m.vizBars)
+	if barWidth < 1 {
+		barWidth = 1
+	}
+
+	var bars []string
+	barChars := []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+	for _, h := range m.vizBars {
+		idx := int(h * float64(len(barChars)-1))
+		if idx >= len(barChars) {
+			idx = len(barChars) - 1
+		}
+		bars = append(bars, string(barChars[idx]))
+	}
+	return styleBarFill.Render(strings.Join(bars, ""))
+}
+
+// renderProgressBar returns formatted progress bar with state/shuffle/loop indicators
+func (m Model) renderProgressBar() string {
+	// State glyph
+	state := " "
+	switch m.p.State() {
+	case player.StatePlaying:
+		state = "▶"
+	case player.StatePaused:
+		state = "❚❚"
+	case player.StateStopped:
+		state = "■"
+	}
+
+	// Shuffle glyph
+	shuffle := " "
+	if m.p.IsShuffle() {
+		shuffle = "⇌"
+	}
+
+	// Loop glyph
+	loopGlyph := " "
+	switch m.p.GetLoopMode() {
+	case 0: // all
+		loopGlyph = "↻"
+	case 1: // off
+		loopGlyph = " "
+	case 2: // one
+		loopGlyph = "↺"
+	}
+
+	elapsed := fmtTime(m.pos)
+	total := fmtTime(m.dur)
+	barLen := m.width - 30
+	if barLen < 10 {
+		barLen = 10
+	}
+
+	filled := 0
+	if m.dur > 0 {
+		filled = int((m.pos / m.dur) * float64(barLen))
+	}
+	if filled > barLen {
+		filled = barLen
+	}
+
+	bar := strings.Repeat("━", filled) + strings.Repeat("─", barLen-filled)
+	vol := int(math.Round(float64(m.p.Volume()) * 100))
+
+	return fmt.Sprintf("%s %s %s  %s |%s| %s  %3d%%", state, shuffle, loopGlyph, elapsed, bar, total, vol)
 }
 
 // ── Playlists view ────────────────────────────────────────────────────────────
