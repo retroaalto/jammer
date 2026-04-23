@@ -649,7 +649,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Seek backward
-	if m.kb.Is("Backwards5s", keyStr) || keyStr == "left" || keyStr == "h" {
+	if m.kb.Is("Backwards5s", keyStr) || keyStr == "left" {
 		m.p.SeekBackward(float64(m.seekStep))
 		jlog.Infof("ui: seek -%ds", m.seekStep)
 		return m, nil
@@ -1149,6 +1149,25 @@ func (m Model) plListHeight() int {
 
 // ── View ──────────────────────────────────────────────────────────────────────
 
+// currentSongPath returns the path/URL of the currently playing song,
+// falling back to a friendly message if nothing is playing.
+func (m Model) currentSongPath() string {
+	if len(m.songs) == 0 {
+		return "No song is playing"
+	}
+	if m.playing >= 0 && m.playing < len(m.songs) {
+		s := m.songs[m.playing]
+		if s.Path != "" {
+			return s.Path
+		}
+		if s.URL != "" {
+			return s.URL
+		}
+		return s.DisplayTitle()
+	}
+	return "No song is playing"
+}
+
 func (m Model) View() tea.View {
 	if m.width == 0 {
 		v := tea.NewView("loading...")
@@ -1157,35 +1176,32 @@ func (m Model) View() tea.View {
 	}
 	var b strings.Builder
 
-	// ── Tabs ──────────────────────────────────────────────────────────────────
-	songs := styleTabInactive.Render("Songs")
-	pls := styleTabInactive.Render("Playlists")
-	if m.view == viewDefault || m.view == viewAll {
-		songs = styleTabActive.Render("Songs")
-	} else {
-		pls = styleTabActive.Render("Playlists")
-	}
-	b.WriteString(styleTitle.Render("  jammer") + "  " + songs + "  " + pls + "\n\n")
-
 	// Render based on current view
-	if m.view == viewConfirmConvert {
+	switch m.view {
+	case viewConfirmConvert:
 		b.WriteString(m.renderConfirmConvert())
-	} else if m.view == viewPlaylists {
-		b.WriteString(m.renderPlaylists())
-	} else if m.view == viewHelp {
+	case viewHelp:
 		b.WriteString(m.renderHelp())
-	} else if m.view == viewSettings {
+	case viewSettings:
 		b.WriteString(m.renderSettings())
-	} else if m.view == viewDefault {
-		b.WriteString(m.renderSongsDefault())
-	} else if m.view == viewAll {
-		b.WriteString(m.renderSongsAll())
-	} else if m.view == viewRename {
+	case viewRename:
 		b.WriteString(m.renderRename())
-	} else if m.view == viewInfo {
+	case viewInfo:
 		b.WriteString(m.renderInfo())
-	} else if m.view == viewAddSong {
+	case viewAddSong:
 		b.WriteString(m.renderAddSong())
+	case viewPlaylists:
+		// Playlists view: show song path in outer box header
+		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderPlaylists()))
+	default:
+		// viewDefault / viewAll: full outer box with song path header
+		var inner string
+		if m.view == viewAll {
+			inner = m.renderSongsAll()
+		} else {
+			inner = m.renderSongsDefault()
+		}
+		b.WriteString(m.renderOuterBox(m.currentSongPath(), inner))
 	}
 
 	v := tea.NewView(b.String())
@@ -1193,78 +1209,169 @@ func (m Model) View() tea.View {
 	return v
 }
 
+// renderOuterBox wraps inner content in a rounded border box. The first line
+// of rendered output is the song path (mimicking the classic jammer mainTable
+// column header), followed by a ├──┤ separator, then the inner content.
+func (m Model) renderOuterBox(header, inner string) string {
+	w := m.width
+	if w < 4 {
+		w = 4
+	}
+	innerW := w - 2 // width inside the left/right border chars
+
+	// Top border: ╭───╮
+	top := "╭" + strings.Repeat("─", innerW) + "╮"
+
+	// Header line: │ path... │
+	headerText := truncate(header, innerW-2)
+	headerLine := "│ " + headerText + strings.Repeat(" ", innerW-2-lipgloss.Width(headerText)) + " │"
+
+	// Separator: ├───┤
+	sep := "├" + strings.Repeat("─", innerW) + "┤"
+
+	// Bottom border: ╰───╯
+	bottom := "╰" + strings.Repeat("─", innerW) + "╯"
+
+	// Wrap each line of inner content with │ │ borders
+	lines := strings.Split(strings.TrimRight(inner, "\n"), "\n")
+	var body strings.Builder
+	for _, line := range lines {
+		lw := lipgloss.Width(line)
+		padding := innerW - lw - 2 // -2 for 1-space margin on each side
+		if padding < 0 {
+			padding = 0
+		}
+		body.WriteString("│ " + line + strings.Repeat(" ", padding) + " │\n")
+	}
+	// Fill remaining height with empty rows
+	usedRows := 3 + len(lines) + 1 // top + header + sep + lines + bottom
+	for usedRows < m.height-1 {
+		body.WriteString("│" + strings.Repeat(" ", innerW) + "│\n")
+		usedRows++
+	}
+
+	return top + "\n" + headerLine + "\n" + sep + "\n" + body.String() + bottom + "\n"
+}
+
 // ── Songs view ────────────────────────────────────────────────────────────────
+
+// songBoxWidth returns the Width param for inner lipgloss boxes.
+// Inner boxes need 1-space margin on each side within the outer box.
+// Outer box inner area = m.width - 2. With 1-char margin each side:
+// inner box total rendered width = m.width - 4.
+// lipgloss adds 2 chars for border → Width = m.width - 6.
+func (m Model) songBoxWidth() int {
+	w := m.width - 6
+	if w < 10 {
+		w = 10
+	}
+	return w
+}
+
+// songBoxTextWidth is the actual text area inside inner boxes.
+// Width - Padding(0,1)×2 = songBoxWidth() - 2.
+func (m Model) songBoxTextWidth() int {
+	return m.songBoxWidth() - 2
+}
+
+// formatSongLine formats a song line with the author right-aligned.
+// boxW is the usable width inside the inner box (after border+padding overhead).
+func formatSongLine(label, title, author string, boxW int) string {
+	labelPart := fmt.Sprintf("%-8s : ", label) // "previous : " = 11 chars
+	// Available chars for title: boxW - labelPart - author - 1 (space before author)
+	titleMax := boxW - len([]rune(labelPart))
+	if author != "" {
+		titleMax -= len([]rune(author)) + 1
+	}
+	if titleMax < 4 {
+		titleMax = 4
+	}
+	titleTrunc := truncate(title, titleMax)
+	if author == "" {
+		return labelPart + titleTrunc
+	}
+	// Pad title to right-align author
+	padLen := boxW - len([]rune(labelPart)) - len([]rune(titleTrunc)) - len([]rune(author))
+	if padLen < 1 {
+		padLen = 1
+	}
+	return labelPart + titleTrunc + strings.Repeat(" ", padLen) + author
+}
 
 func (m Model) renderSongsDefault() string {
 	var b strings.Builder
 
-	// Render 3-song snippet (prev / current / next)
+	boxW := m.songBoxWidth()      // Width param for lipgloss
+	textW := m.songBoxTextWidth() // actual text area = boxW - 2
+
+	// ── 3-song inner box ──────────────────────────────────────────────────────
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("61")).
+		Padding(0, 1).
+		Width(boxW)
+
 	if len(m.songs) == 0 {
-		b.WriteString(styleHelp.Render("  No songs loaded\n"))
+		boxContent := "playlist .\n" +
+			strings.Repeat("─", textW) + "\n" +
+			styleHelp.Render("  No songs loaded")
+		b.WriteString(boxStyle.Render(boxContent))
+		b.WriteString("\n")
 	} else {
-		// Build the 3-song display
 		prevIdx := m.playing - 1
 		if prevIdx < 0 {
-			prevIdx = len(m.songs) - 1 // wrap around
+			prevIdx = len(m.songs) - 1
 		}
 		currIdx := m.playing
 		nextIdx := m.playing + 1
 		if nextIdx >= len(m.songs) {
-			nextIdx = 0 // wrap around
+			nextIdx = 0
 		}
 
-		// Draw bordered box with 3-song snippet
-		b.WriteString(lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("61")).
-			Padding(0, 1).
-			Width(m.width - 8).
-			Render(fmt.Sprintf("playlist %s", filepath.Base(m.plsFile))))
-		b.WriteString("\n")
+		plsName := "."
+		if m.plsFile != "" {
+			plsName = strings.TrimSuffix(filepath.Base(m.plsFile), filepath.Ext(m.plsFile))
+		}
 
-		// Previous song
-		prevTitle := truncate(m.songs[prevIdx].DisplayTitle(), m.width-20)
-		prevLine := fmt.Sprintf("  %-10s : %s", "previous", prevTitle)
-		b.WriteString(styleHelp.Render(prevLine) + "\n")
+		// playlist header + separator
+		header := styleHelp.Render("playlist ") + styleTitle.Render(plsName)
+		sep := strings.Repeat("─", textW)
 
-		// Current song (highlighted)
-		currTitle := truncate(m.songs[currIdx].DisplayTitle(), m.width-20)
-		currLine := fmt.Sprintf("  %-10s : %s", "current", currTitle)
-		b.WriteString(stylePlaying.Render(currLine) + "\n")
+		prevSong := m.songs[prevIdx]
+		currSong := m.songs[currIdx]
+		nextSong := m.songs[nextIdx]
 
-		// Next song
-		nextTitle := truncate(m.songs[nextIdx].DisplayTitle(), m.width-20)
-		nextLine := fmt.Sprintf("  %-10s : %s", "next", nextTitle)
-		b.WriteString(styleHelp.Render(nextLine) + "\n")
-	}
+		prevLine := formatSongLine("previous", prevSong.DisplayTitle(), prevSong.Author, textW)
+		currLine := formatSongLine("current", currSong.DisplayTitle(), currSong.Author, textW)
+		nextLine := formatSongLine("next", nextSong.DisplayTitle(), nextSong.Author, textW)
 
-	// Spacer rows to fill screen
-	lines := 3 + 10 // header + song box + spacer + progress + help
-	for i := lines; i < m.height-10; i++ {
+		boxContent := header + "\n" + sep + "\n" +
+			styleHelp.Render(prevLine) + "\n" +
+			stylePlaying.Render(currLine) + "\n" +
+			styleHelp.Render(nextLine)
+
+		b.WriteString(boxStyle.Render(boxContent))
 		b.WriteString("\n")
 	}
 
-	// Mini help bar
-	b.WriteString(lipgloss.NewStyle().
+	// ── Mini help bar (auto-sized, left-aligned, lowercase keybinds) ──────────
+	helpKey, _ := m.kb.Get("Help")
+	settingsKey, _ := m.kb.Get("Settings")
+	playlistKey, _ := m.kb.Get("ShowHidePlaylist")
+	helpText := fmt.Sprintf("%s for help | %s for settings | %s for playlist",
+		helpKey, settingsKey, playlistKey)
+	helpBar := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("61")).
 		Padding(0, 1).
-		Width(m.width - 8).
-		Render("[H] for help | [C] for settings | [F] for playlist"))
-	b.WriteString("\n")
+		Render(helpText)
+	b.WriteString(helpBar + "\n")
 
-	// Visualizer row
-	b.WriteString(" ")
-	b.WriteString(m.renderVisualizer())
-	b.WriteString("\n")
+	// ── Visualizer row ────────────────────────────────────────────────────────
+	b.WriteString(" " + m.renderVisualizer() + "\n")
 
-	// Progress/time bar
-	b.WriteString(lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("61")).
-		Padding(0, 1).
-		Width(m.width - 8).
-		Render(m.renderProgressBar()))
+	// ── Progress/time bar ─────────────────────────────────────────────────────
+	b.WriteString(boxStyle.Render(m.renderProgressBar()))
 	b.WriteString("\n")
 
 	return b.String()
@@ -1273,39 +1380,54 @@ func (m Model) renderSongsDefault() string {
 func (m Model) renderSongsAll() string {
 	var b strings.Builder
 
-	// Filter prompt (shown above the list when filtering or a filter is active).
-	if m.filtering {
-		cursor := styleBarFill.Render("█")
-		b.WriteString(styleHelp.Render(" / ") + m.filter + cursor + "\n")
-	} else if m.filter != "" {
-		b.WriteString(styleHelp.Render(fmt.Sprintf(" / %s  (esc to clear)", m.filter)) + "\n")
+	boxW := m.songBoxWidth()
+	textW := m.songBoxTextWidth()
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("61")).
+		Padding(0, 1).
+		Width(boxW)
+
+	// ── All-songs inner box ───────────────────────────────────────────────────
+	// Calculate how many song rows fit inside the box.
+	// Overhead: outer(3+1) + inner border(2) + header+sep+2 instructions(4) +
+	//           help bar(3) + visualizer(1) + progress bar(3) = 17
+	lh := m.height - 17
+	if lh < 2 {
+		lh = 2
 	}
 
+	plsName := "."
+	if m.plsFile != "" {
+		plsName = strings.TrimSuffix(filepath.Base(m.plsFile), filepath.Ext(m.plsFile))
+	}
+
+	// keybinds for instructions
+	scrollUpKey, _ := m.kb.Get("PlaylistViewScrollup")
+	scrollDownKey, _ := m.kb.Get("PlaylistViewScrolldown")
+	chooseKey, _ := m.kb.Get("Choose")
+	deleteKey, _ := m.kb.Get("DeleteCurrentSong")
+
+	header := styleHelp.Render("playlist ") + styleTitle.Render(plsName)
+	sep := strings.Repeat("─", textW)
+	instr1 := styleHelp.Render(fmt.Sprintf("Move with %s, %s", scrollUpKey, scrollDownKey))
+	instr2 := styleHelp.Render(fmt.Sprintf("Play with %s. Delete with %s.", chooseKey, deleteKey))
+
+	var songLines strings.Builder
 	total := m.filterLen()
-	lh := m.songListHeight()
 	end := m.soffset + lh
 	if end > total {
 		end = total
 	}
-
 	for vi := m.soffset; vi < end; vi++ {
 		song, realIdx := m.filterSong(vi)
-		title := truncate(song.DisplayTitle(), m.width-12)
+		// number + title truncated to text width minus "N. " prefix
+		numPrefix := fmt.Sprintf("%d. ", realIdx+1)
+		title := truncate(song.DisplayTitle(), textW-len([]rune(numPrefix)))
+		line := numPrefix + title
 
-		// Left status prefix
-		prefix := "  "
-		if realIdx == m.playing {
-			switch m.p.State() {
-			case player.StatePlaying:
-				prefix = "> "
-			case player.StatePaused:
-				prefix = "| "
-			default:
-				prefix = "  "
-			}
-		}
-
-		// Right download status
+		// download status suffix
 		suffix := ""
 		if ds, ok := m.dlStates[realIdx]; ok && ds != nil {
 			switch {
@@ -1320,8 +1442,6 @@ func (m Model) renderSongsAll() string {
 		} else if !song.Downloaded() {
 			suffix = styleNotDL.Render(" [dl]")
 		}
-
-		line := prefix + title
 
 		var rendered string
 		switch {
@@ -1340,65 +1460,54 @@ func (m Model) renderSongsAll() string {
 		default:
 			rendered = styleNormal.Render(line)
 		}
-		b.WriteString(rendered + suffix + "\n")
+		songLines.WriteString(rendered + suffix + "\n")
 	}
-
+	// scroll indicator if list is longer than visible area
 	if total > lh {
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  %d-%d / %d", m.soffset+1, end, total)))
-		b.WriteByte('\n')
+		songLines.WriteString(styleHelp.Render(fmt.Sprintf("%d-%d / %d", m.soffset+1, end, total)) + "\n")
 	}
-	b.WriteByte('\n')
 
-	// Now playing
-	nowTitle := "—"
-	if m.playing >= 0 && m.playing < len(m.songs) {
-		nowTitle = truncate(m.songs[m.playing].DisplayTitle(), m.width-12)
-	}
-	icon := " "
-	switch m.p.State() {
-	case player.StatePlaying:
-		icon = "▶"
-	case player.StatePaused:
-		icon = "⏸"
-	case player.StateStopped:
-		icon = "■"
-	}
-	b.WriteString(styleTitle.Render(fmt.Sprintf(" %s  %s", icon, nowTitle)) + "\n")
-	b.WriteString(" " + m.progressBar() + "\n")
-	vol := int(math.Round(float64(m.p.Volume()) * 100))
-	loopLabels := [3]string{"loop:all", "loop:off", "loop:one"}
-	loopLabel := loopLabels[int(m.p.GetLoopMode())%3]
-	shuffleLabel := ""
-	if m.p.IsShuffle() {
-		shuffleLabel = "   shuffle"
-	}
-	b.WriteString(styleVolume.Render(fmt.Sprintf(" vol: %3d%%  %s   %s%s", vol, m.volumeBar(), loopLabel, shuffleLabel)) + "\n\n")
+	boxContent := header + "\n" + sep + "\n" + instr1 + "\n" + instr2 + "\n" + strings.TrimRight(songLines.String(), "\n")
+	b.WriteString(boxStyle.Render(boxContent))
+	b.WriteString("\n")
 
-	if m.lastError != "" {
-		errMsg := truncate("! "+m.lastError, m.width-3)
-		b.WriteString(styleErr.Render(" "+errMsg) + "\n")
-	}
-	b.WriteString(styleHelp.Render(" space/enter: play/pause  s: stop  n: next  p: prev  r: random  R: shuffle  d: download") + "\n")
-	b.WriteString(styleHelp.Render(fmt.Sprintf(" /: filter  ←/→: seek %ds  +/-: vol  L: loop  del: remove  S+del: +file  tab: playlists  q: quit", m.seekStep)) + "\n")
+	// ── Mini help bar ─────────────────────────────────────────────────────────
+	helpKey, _ := m.kb.Get("Help")
+	settingsKey, _ := m.kb.Get("Settings")
+	playlistKey, _ := m.kb.Get("ShowHidePlaylist")
+	helpText := fmt.Sprintf("%s for help | %s for settings | %s for playlist",
+		helpKey, settingsKey, playlistKey)
+	helpBar := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("61")).
+		Padding(0, 1).
+		Render(helpText)
+	b.WriteString(helpBar + "\n")
+
+	// ── Visualizer row ────────────────────────────────────────────────────────
+	b.WriteString(" " + m.renderVisualizer() + "\n")
+
+	// ── Progress/time bar ─────────────────────────────────────────────────────
+	b.WriteString(boxStyle.Render(m.renderProgressBar()))
+	b.WriteString("\n")
+
 	return b.String()
 }
 
-// renderHelp returns the help screen with paginated keybindings
+// renderHelp returns the help screen with paginated keybindings.
+// Layout matches classic jammer: 4-column table (Controls│Desc│ModControls│Desc)
+// wrapped inside the standard outer box.
 func (m Model) renderHelp() string {
-	var b strings.Builder
-
-	// All keybindings to display
 	allBindings := m.getHelpBindings()
 
-	// Calculate pages (10 keybindings per page, 2 columns = 20 per page)
-	itemsPerPage := 20
+	// 10 rows per page; each row uses 2 flat items (left + right 2 cols).
+	rowsPerPage := 10
+	itemsPerPage := rowsPerPage * 2
 	totalPages := (len(allBindings) + itemsPerPage - 1) / itemsPerPage
-
 	if totalPages == 0 {
 		totalPages = 1
 	}
 
-	// Clamp page number
 	page := m.helpPageNum
 	if page >= totalPages {
 		page = totalPages - 1
@@ -1407,7 +1516,6 @@ func (m Model) renderHelp() string {
 		page = 0
 	}
 
-	// Get items for this page
 	start := page * itemsPerPage
 	end := start + itemsPerPage
 	if end > len(allBindings) {
@@ -1415,62 +1523,87 @@ func (m Model) renderHelp() string {
 	}
 	pageItems := allBindings[start:end]
 
-	// Render header
-	pageIndicator := fmt.Sprintf("(%d/%d)", page+1, totalPages)
-	b.WriteString(styleTitle.Render(fmt.Sprintf("  Keybindings %s\n", pageIndicator)))
-	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-
-	// Render 2-column table
-	// Split items into left and right columns
-	mid := (len(pageItems) + 1) / 2
-
-	for i := 0; i < mid; i++ {
-		// Left column
-		leftItem := pageItems[i]
-		leftKey := keybinds.GetDisplay(leftItem.key)
-		leftDesc := truncate(leftItem.desc, 25)
-		left := fmt.Sprintf("  %-30s %-25s", leftKey, leftDesc)
-
-		// Right column
-		var right string
-		if i+mid < len(pageItems) {
-			rightItem := pageItems[i+mid]
-			rightKey := keybinds.GetDisplay(rightItem.key)
-			rightDesc := truncate(rightItem.desc, 25)
-			right = fmt.Sprintf("  %-30s %-25s", rightKey, rightDesc)
-		}
-
-		b.WriteString(styleHelp.Render(left + right + "\n"))
+	// Column widths (each includes 1 leading space)
+	// innerW = m.width - 4 (outer box margins); minus 3 separators
+	innerW := m.width - 4
+	if innerW < 40 {
+		innerW = 40
+	}
+	c1W := 21 // space + 20 key text
+	c2W := 26 // space + 25 desc text
+	c3W := 21 // space + 20 key text
+	c4W := innerW - 3 - c1W - c2W - c3W
+	if c4W < 15 {
+		c4W = 15
 	}
 
-	b.WriteString("\n")
-	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  ←/→: prev/next page  ESC: back  q: quit\n"))
+	helpCell := func(text string, width int) string {
+		text = " " + text
+		runes := []rune(text)
+		if len(runes) > width {
+			runes = runes[:width]
+		}
+		return string(runes) + strings.Repeat(" ", width-len(runes))
+	}
+	row := func(c1, c2, c3, c4 string) string {
+		return helpCell(c1, c1W) + "│" + helpCell(c2, c2W) + "│" + helpCell(c3, c3W) + "│" + helpCell(c4, c4W)
+	}
+	sepRow := strings.Repeat("─", c1W) + "┼" + strings.Repeat("─", c2W) + "┼" + strings.Repeat("─", c3W) + "┼" + strings.Repeat("─", c4W)
 
-	return b.String()
+	var inner strings.Builder
+
+	// Header row
+	inner.WriteString(styleTitle.Render(row("Controls", "Description", "ModControls", fmt.Sprintf("Description (%d/%d)", page+1, totalPages))) + "\n")
+	inner.WriteString(styleHelp.Render(sepRow) + "\n")
+
+	// Item rows (pairs)
+	mid := (len(pageItems) + 1) / 2
+	for i := 0; i < mid; i++ {
+		left := pageItems[i]
+		leftKey := keybinds.GetDisplay(left.key)
+		leftDesc := left.desc
+
+		var rightKey, rightDesc string
+		if i+mid < len(pageItems) {
+			right := pageItems[i+mid]
+			rightKey = keybinds.GetDisplay(right.key)
+			rightDesc = right.desc
+		}
+		inner.WriteString(styleHelp.Render(row(leftKey, leftDesc, rightKey, rightDesc)) + "\n")
+	}
+
+	// Navigation hints
+	inner.WriteString("\n")
+	var navParts []string
+	if page > 0 {
+		navParts = append(navParts, "← prev page")
+	}
+	if page < totalPages-1 {
+		navParts = append(navParts, "→ next page")
+	}
+	navParts = append(navParts, "ESC: back")
+	inner.WriteString(styleHelp.Render(strings.Join(navParts, "  ")))
+
+	return m.renderOuterBox(m.currentSongPath(), inner.String())
 }
 
-// renderSettings renders the settings screen (Phase 6)
+// renderSettings renders the settings screen.
+// Layout matches classic jammer: 3-column table (Settings│Value│ChangeValue)
+// wrapped inside the standard outer box.
 func (m Model) renderSettings() string {
-	var b strings.Builder
-
-	// Render header
-	b.WriteString(styleTitle.Render("  Settings\n"))
-	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-
-	// Settings list
+	// Settings items: name, current value, how to change
 	settings := []struct {
-		name  string
-		value string
+		name       string
+		value      string
+		changeHint string
 	}{
-		{"Seek step", "5s"},
-		{"Volume step", "5%"},
-		{"Auto-save", "on"},
-		{"Visualizer", "on"},
-		{"Default view", "3-song"},
+		{"Seek step", fmt.Sprintf("%ds", m.seekStep), "enter to change"},
+		{"Volume step", "5%", "enter to change"},
+		{"Auto-save", "on", "enter to toggle"},
+		{"Visualizer", "on", "enter to toggle"},
+		{"Default view", "3-song", "enter to change"},
 	}
 
-	// Clamp cursor
 	if m.settingsCursor >= len(settings) {
 		m.settingsCursor = len(settings) - 1
 	}
@@ -1478,20 +1611,48 @@ func (m Model) renderSettings() string {
 		m.settingsCursor = 0
 	}
 
+	// Column widths
+	innerW := m.width - 4
+	if innerW < 40 {
+		innerW = 40
+	}
+	c1W := 31                     // space + 30 name
+	c2W := 21                     // space + 20 value
+	c3W := innerW - 2 - c1W - c2W // minus 2 separators
+	if c3W < 15 {
+		c3W = 15
+	}
+
+	cell := func(text string, width int) string {
+		text = " " + text
+		runes := []rune(text)
+		if len(runes) > width {
+			runes = runes[:width]
+		}
+		return string(runes) + strings.Repeat(" ", width-len(runes))
+	}
+	row := func(c1, c2, c3 string) string {
+		return cell(c1, c1W) + "│" + cell(c2, c2W) + "│" + cell(c3, c3W)
+	}
+	sepRow := strings.Repeat("─", c1W) + "┼" + strings.Repeat("─", c2W) + "┼" + strings.Repeat("─", c3W)
+
+	var inner strings.Builder
+	inner.WriteString(styleTitle.Render(row("Settings", "Value", "Change value (1/1)")) + "\n")
+	inner.WriteString(styleHelp.Render(sepRow) + "\n")
+
 	for i, s := range settings {
-		line := fmt.Sprintf("  %-20s: %s", s.name, s.value)
+		r := row(s.name, s.value, s.changeHint)
 		if i == m.settingsCursor {
-			b.WriteString(styleSelected.Render(line) + "\n")
+			inner.WriteString(styleSelected.Render(r) + "\n")
 		} else {
-			b.WriteString(styleHelp.Render(line) + "\n")
+			inner.WriteString(styleHelp.Render(r) + "\n")
 		}
 	}
 
-	b.WriteString("\n")
-	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  ↑/↓: navigate  ESC: back  q: quit\n"))
+	inner.WriteString("\n")
+	inner.WriteString(styleHelp.Render("↑/↓: navigate  ESC: back"))
 
-	return b.String()
+	return m.renderOuterBox(m.currentSongPath(), inner.String())
 }
 
 // getHelpBindings returns a sorted list of all keybindings for the help screen
@@ -1811,41 +1972,45 @@ func (m Model) renderVisualizer() string {
 	return styleBarFill.Render(strings.Join(bars, ""))
 }
 
-// renderProgressBar returns formatted progress bar with state/shuffle/loop indicators
+// renderProgressBar returns formatted progress bar with state/shuffle/loop indicators.
+// Matches the classic jammer format: state shuffle loop elapsed |bar| total  vol%
 func (m Model) renderProgressBar() string {
-	// State glyph
-	state := " "
+	// State glyph: classic shows ❚❚ when PLAYING (pause icon = "you can pause")
+	//              and ▶  when PAUSED (play icon = "you can play")
+	state := "■ "
 	switch m.p.State() {
 	case player.StatePlaying:
-		state = "▶"
-	case player.StatePaused:
 		state = "❚❚"
+	case player.StatePaused:
+		state = "▶ "
 	case player.StateStopped:
-		state = "■"
+		state = "■ "
 	}
 
-	// Shuffle glyph
-	shuffle := " "
-	if m.p.IsShuffle() {
-		shuffle = "⇌"
-	}
+	// Shuffle glyph (classic: ⇌  whether on or off, always shown)
+	shuffle := "⇌ "
 
-	// Loop glyph
-	loopGlyph := " "
+	// Loop glyph (classic: " ↻  " for loop-all/off, " ⟳  " for loop-once)
+	loopGlyph := " ↻  "
 	switch m.p.GetLoopMode() {
 	case 0: // all
-		loopGlyph = "↻"
+		loopGlyph = " ↻  "
 	case 1: // off
-		loopGlyph = " "
+		loopGlyph = " ↻  "
 	case 2: // one
-		loopGlyph = "↺"
+		loopGlyph = " ⟳  "
 	}
 
 	elapsed := fmtTime(m.pos)
 	total := fmtTime(m.dur)
-	barLen := m.width - 30
-	if barLen < 10 {
-		barLen = 10
+
+	// Inner box text width: Width(boxW) + Padding(0,1) → inner text = boxW - 2
+	// Format: state(2) + shuffle(2) + loop(4) + elapsed(~5) + " |"(2) + bar(N) + "| "(2) + total(~5) + "   "(3) + vol(4)
+	// Fixed ≈ 2+2+4+5+2+2+5+3+4 = 29 chars → use textW - 29
+	textW := m.songBoxTextWidth()
+	barLen := textW - 29
+	if barLen < 6 {
+		barLen = 6
 	}
 
 	filled := 0
@@ -1856,10 +2021,11 @@ func (m Model) renderProgressBar() string {
 		filled = barLen
 	}
 
-	bar := strings.Repeat("━", filled) + strings.Repeat("─", barLen-filled)
+	// Classic uses █ for filled and space for empty
+	bar := strings.Repeat("█", filled) + strings.Repeat(" ", barLen-filled)
 	vol := int(math.Round(float64(m.p.Volume()) * 100))
 
-	return fmt.Sprintf("%s %s %s  %s |%s| %s  %3d%%", state, shuffle, loopGlyph, elapsed, bar, total, vol)
+	return fmt.Sprintf("%s%s%s %s |%s| %s  %3d%%", state, shuffle, loopGlyph, elapsed, bar, total, vol)
 }
 
 // ── Playlists view ────────────────────────────────────────────────────────────
