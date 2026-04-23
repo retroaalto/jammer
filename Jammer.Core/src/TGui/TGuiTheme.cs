@@ -3,7 +3,7 @@ using Terminal.Gui;
 namespace Jammer.TGui
 {
     /// <summary>
-    /// Bridges Jammer's Spectre.Console-based theme system to Terminal.Gui v2 ColorSchemes.
+    /// Bridges Jammer's Spectre.Console-based theme system to Terminal.Gui ColorSchemes.
     ///
     /// Call Apply() once after Application.Init() and after Themes.Init().
     /// Views read the public static color/scheme properties to color their labels.
@@ -22,10 +22,19 @@ namespace Jammer.TGui
         public static ColorScheme Base { get; private set; } = BuildBase();
         public static ColorScheme Dim  { get; private set; } = BuildDim();
 
+        // The terminal's own default background color (captured once on Apply).
+        private static Color _termBg = Color.Black;
+
         // ── Init ──────────────────────────────────────────────────────────
 
         public static void Apply()
         {
+            // Do NOT read Colors.Base.Normal.Background here — after Application.Init()
+            // Terminal.Gui has already overwritten it with its own default cyan scheme,
+            // so reading it would capture cyan, not the terminal's real background.
+            // _termBg stays as Color.Black (the field default), which produces a
+            // neutral dark scheme that respects most terminal themes.
+
             var t = Themes.CurrentTheme;
 
             CurrentSongColor    = SpectreToTGui(t?.GeneralPlaylist?.CurrentSongColor,  Color.BrightGreen);
@@ -38,45 +47,42 @@ namespace Jammer.TGui
             Base = BuildBase();
             Dim  = BuildDim();
 
-            // Push our base scheme into the global color scheme table so all
-            // views that don't override ColorScheme inherit it.
-            Colors.ColorSchemes["Base"]   = Base;
-            Colors.ColorSchemes["Dialog"] = MakeScheme(Color.White, Color.Black, CurrentSongColor);
-            Colors.ColorSchemes["Menu"]   = MakeScheme(Color.White, Color.Black, CurrentSongColor);
-            Colors.ColorSchemes["Error"]  = MakeScheme(Color.BrightRed, Color.Black, Color.White);
+            // Apply scheme globally using the terminal's own background so the UI
+            // stays transparent rather than painting everything black.
+            Colors.Base    = Base;
+            Colors.Dialog  = MakeScheme(Color.White, _termBg, CurrentSongColor);
+            Colors.Menu    = MakeScheme(Color.White, _termBg, CurrentSongColor);
+            Colors.Error   = MakeScheme(Color.BrightRed, _termBg, Color.White);
         }
 
         // ── Helpers for views ─────────────────────────────────────────────
 
-        // v2 Color is RGB-based; use Black as the default background.
-        private static readonly Color DefaultBg = Color.Black;
-
         /// <summary>Return a ColorScheme with the given foreground on the terminal default background.</summary>
         public static ColorScheme LabelScheme(Color fg) =>
-            MakeScheme(fg, DefaultBg, fg);
+            MakeScheme(fg, _termBg, fg);
 
         // ── Internal ──────────────────────────────────────────────────────
 
         private static ColorScheme BuildBase() =>
-            MakeScheme(Color.White, DefaultBg, CurrentSongColor);
+            MakeScheme(Color.White, _termBg, CurrentSongColor);
 
         private static ColorScheme BuildDim() =>
-            MakeScheme(Color.Gray, DefaultBg, Color.Gray);
+            MakeScheme(Color.Gray, _termBg, Color.Gray);
 
         private static ColorScheme MakeScheme(Color fg, Color bg, Color hotFg) =>
             new ColorScheme
             {
-                Normal    = new Terminal.Gui.Attribute(fg, bg),
-                Focus     = new Terminal.Gui.Attribute(Color.Black, fg),
-                HotNormal = new Terminal.Gui.Attribute(hotFg, bg),
-                HotFocus  = new Terminal.Gui.Attribute(Color.Black, hotFg),
-                Disabled  = new Terminal.Gui.Attribute(Color.DarkGray, bg),
+                Normal    = Terminal.Gui.Attribute.Make(fg, bg),
+                Focus     = Terminal.Gui.Attribute.Make(Color.Black, fg),
+                HotNormal = Terminal.Gui.Attribute.Make(hotFg, bg),
+                HotFocus  = Terminal.Gui.Attribute.Make(Color.Black, hotFg),
+                Disabled  = Terminal.Gui.Attribute.Make(Color.DarkGray, bg),
             };
 
         /// <summary>
         /// Map a Spectre.Console color name (e.g. "green", "red bold") to the
         /// nearest Terminal.Gui Color. Style modifiers (bold, italic, etc.) are
-        /// ignored — Terminal.Gui v2 handles bold via Attribute flags.
+        /// ignored — Terminal.Gui v1 does not support them.
         /// Returns <paramref name="fallback"/> for empty / unknown names.
         /// </summary>
         public static Color SpectreToTGui(string? name, Color fallback)
@@ -99,7 +105,7 @@ namespace Jammer.TGui
                 "grey" or "gray"         => Color.Gray,
                 "darkgrey" or "darkgray" => Color.DarkGray,
                 "magenta"                => Color.BrightMagenta,
-                "orange"                 => Color.Yellow,
+                "orange"                 => Color.Brown,
                 "purple"                 => Color.Magenta,
                 _                        => fallback,
             };

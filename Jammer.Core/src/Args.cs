@@ -170,7 +170,7 @@ namespace Jammer
                         AnsiConsole.MarkupLine($"[green]Jammer {Locale.Miscellaneous.Version}: " + Utils.Version + "[/]");
                         Environment.Exit(0);
                         return;
-                    case "--test-scid":
+                    case "--test-puppeteer":
                         try
                         {
                             string report = SCClientIdFetcher.RunSelfTestAsync().GetAwaiter().GetResult();
@@ -179,7 +179,7 @@ namespace Jammer
                         }
                         catch (Exception ex)
                         {
-                            AnsiConsole.WriteLine("SoundCloud client ID self-test failed: " + ex.Message);
+                            AnsiConsole.WriteLine("Puppeteer self-test failed: " + ex.Message);
                             Environment.Exit(1);
                         }
                         return;

@@ -1,10 +1,9 @@
-using System.Collections.ObjectModel;
 using Terminal.Gui;
 
 namespace Jammer.TGui
 {
     /// <summary>
-    /// Terminal.Gui v2 equivalents of Message.Input, Message.Data and
+    /// Phase 2.7: Terminal.Gui equivalents of Message.Input, Message.Data and
     /// Message.CustomMenuSelect. All methods block on the UI thread via
     /// Application.Run(dialog) and return when the user dismisses the dialog.
     /// </summary>
@@ -20,7 +19,7 @@ namespace Jammer.TGui
         {
             string? result = null;
 
-            var dialog = new Dialog { Title = title, Width = 64, Height = 9 };
+            var dialog = new Dialog(title, 64, 9);
 
             var label = new Label
             {
@@ -29,25 +28,23 @@ namespace Jammer.TGui
                 Text = prompt,
             };
 
-            var field = new TextField
+            var field = new TextField(prefill)
             {
                 X = 1, Y = 2,
                 Width = Dim.Fill(2),
-                Text = prefill,
             };
 
-            var ok     = new Button { Title = "OK", IsDefault = true };
-            var cancel = new Button { Title = "Cancel" };
+            var ok     = new Button("OK", is_default: true);
+            var cancel = new Button("Cancel");
 
-            ok.Accepting     += (_, _) => { result = field.Text?.ToString(); Application.RequestStop(); };
-            cancel.Accepting += (_, _) => { result = null;                   Application.RequestStop(); };
+            ok.Clicked     += () => { result = field.Text?.ToString(); dialog.Running = false; };
+            cancel.Clicked += () => { result = null;                   dialog.Running = false; };
 
             dialog.AddButton(ok);
             dialog.AddButton(cancel);
             dialog.Add(label, field);
 
             Application.Run(dialog);
-            dialog.Dispose();
             return result;
         }
 
@@ -58,7 +55,12 @@ namespace Jammer.TGui
         /// </summary>
         public static void Data(string message, string title, bool isError = false)
         {
-            MessageBox.Query(title, message, "OK");
+            MessageBox.Query(
+                Math.Min(Math.Max(message.Length + 6, 40), Application.Driver?.Cols ?? 80),
+                7,
+                title,
+                message,
+                "OK");
         }
 
         // ── Custom menu / list selection ────────────────────────────────────
@@ -79,7 +81,7 @@ namespace Jammer.TGui
 
             string? result = "__CANCELLED__";
 
-            var dialog = new Dialog { Title = title, Width = 70, Height = 20 };
+            var dialog = new Dialog(title, 70, 20);
 
             // Build display strings: title  [author]
             var items = options
@@ -98,7 +100,7 @@ namespace Jammer.TGui
                 Height = Dim.Fill(3),
                 CanFocus = true,
             };
-            list.SetSource<string>(new ObservableCollection<string>(items));
+            list.SetSource(items);
             list.SelectedItem = Math.Clamp(settings.StartIndex, 0, Math.Max(0, options.Length - 1));
 
             var hint = new Label
@@ -110,28 +112,27 @@ namespace Jammer.TGui
                 Text = "Enter: select  Esc: cancel",
             };
 
-            var ok     = new Button { Title = "OK", IsDefault = true };
-            var cancel = new Button { Title = "Cancel" };
+            var ok     = new Button("OK", is_default: true);
+            var cancel = new Button("Cancel");
 
-            ok.Accepting += (_, _) =>
+            ok.Clicked += () =>
             {
                 int idx = list.SelectedItem;
                 result = (idx >= 0 && idx < options.Length)
                     ? options[idx].DataURI
                     : "__CANCELLED__";
-                Application.RequestStop();
+                dialog.Running = false;
             };
-            cancel.Accepting += (_, _) => { result = "__CANCELLED__"; Application.RequestStop(); };
+            cancel.Clicked += () => { result = "__CANCELLED__"; dialog.Running = false; };
 
             // Enter on list row = same as OK
-            list.OpenSelectedItem += (_, _) => ok.InvokeCommand(Command.Accept);
+            list.OpenSelectedItem += _ => ok.OnClicked();
 
             dialog.AddButton(ok);
             dialog.AddButton(cancel);
             dialog.Add(list, hint);
 
             Application.Run(dialog);
-            dialog.Dispose();
             return result;
         }
     }

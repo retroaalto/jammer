@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using Terminal.Gui;
 
 namespace Jammer.TGui.Views
@@ -37,7 +36,7 @@ namespace Jammer.TGui.Views
                 Text = "Enter: play  Del: remove  Esc: back",
             };
 
-            _list.OpenSelectedItem += (_, e) => OnSongSelected(e);
+            _list.OpenSelectedItem += OnSongSelected;
             Add(_list, _hint);
 
             Refresh();
@@ -55,7 +54,7 @@ namespace Jammer.TGui.Views
                 })
                 .ToList();
 
-            _list.SetSource<string>(new ObservableCollection<string>(items));
+            _list.SetSource(items);
             _list.CurrentSongIndex = Utils.CurrentSongIndex;
 
             int idx = Math.Clamp(Utils.CurrentSongIndex, 0, Math.Max(0, items.Count - 1));
@@ -63,21 +62,21 @@ namespace Jammer.TGui.Views
             _list.TopItem = Math.Max(0, idx - 5);
         }
 
-        protected override bool OnKeyDown(Key key)
+        public override bool ProcessKey(KeyEvent keyEvent)
         {
-            if (key == Key.Enter)
+            if (keyEvent.Key == Key.Enter)
             {
                 int idx = _list.SelectedItem;
                 if (idx >= 0 && idx < Utils.Songs.Length)
                     OnSongSelected(new ListViewItemEventArgs(idx, Utils.Songs[idx]));
                 return true;
             }
-            if (KeybindingParser.Matches(key, Keybindings.DeleteCurrentSong))
+            if (KeybindingParser.Matches(keyEvent, Keybindings.DeleteCurrentSong))
             {
                 RemoveSelected();
                 return true;
             }
-            return base.OnKeyDown(key);
+            return base.ProcessKey(keyEvent);
         }
 
         private void OnSongSelected(ListViewItemEventArgs e)
@@ -92,7 +91,7 @@ namespace Jammer.TGui.Views
                     Task.Run(async () =>
                     {
                         await Funcs.ContinueToRss();
-                        Application.Invoke(() => RssFeedRequested?.Invoke());
+                        Application.MainLoop?.Invoke(() => RssFeedRequested?.Invoke());
                     });
                     return;
                 }
@@ -137,11 +136,12 @@ namespace Jammer.TGui.Views
                 RowRender += OnRowRenderHandler;
             }
 
-            private void OnRowRenderHandler(object? sender, ListViewRowEventArgs args)
+            private void OnRowRenderHandler(ListViewRowEventArgs args)
             {
                 if (args.Row == CurrentSongIndex)
                 {
-                    args.RowAttribute = new Terminal.Gui.Attribute(Color.Black, Color.Green);
+                    args.RowAttribute = Application.Driver.MakeAttribute(
+                        Color.Black, Color.Green);
                 }
             }
         }

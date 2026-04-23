@@ -25,7 +25,7 @@ namespace Jammer.TGui.Views
         public PlayerWindow()
         {
             Title = Locale.Player.Playlist;
-            BorderStyle = LineStyle.Single;
+            Border.BorderStyle = BorderStyle.Single;
             ColorScheme = TGuiTheme.Base;
 
             _prevLabel = new Label
@@ -56,57 +56,49 @@ namespace Jammer.TGui.Views
             };
 
             // ── Hint bar (colored key brackets + plain text) ──────────────
-            _hBracket = new Label
+            _hBracket = new Label("[H]")
             {
                 X = 2,
                 Y = Pos.AnchorEnd(2),
-                Text = "[H]",
                 ColorScheme = TGuiTheme.LabelScheme(TGuiTheme.HelpLetterColor),
             };
-            _hText = new Label
+            _hText = new Label($" {Locale.Help.Description}  ")
             {
                 X = Pos.Right(_hBracket),
                 Y = Pos.AnchorEnd(2),
-                Text = $" {Locale.Help.Description}  ",
             };
-            _fBracket = new Label
+            _fBracket = new Label("[F]")
             {
                 X = Pos.Right(_hText),
                 Y = Pos.AnchorEnd(2),
-                Text = "[F]",
                 ColorScheme = TGuiTheme.LabelScheme(TGuiTheme.PlaylistLetterColor),
             };
-            _fText = new Label
+            _fText = new Label($" {Locale.Player.ForPlaylist}  ")
             {
                 X = Pos.Right(_fBracket),
                 Y = Pos.AnchorEnd(2),
-                Text = $" {Locale.Player.ForPlaylist}  ",
             };
-            _cBracket = new Label
+            _cBracket = new Label("[C]")
             {
                 X = Pos.Right(_fText),
                 Y = Pos.AnchorEnd(2),
-                Text = "[C]",
                 ColorScheme = TGuiTheme.LabelScheme(TGuiTheme.SettingsLetterColor),
             };
-            _cText = new Label
+            _cText = new Label(" Settings  ")
             {
                 X = Pos.Right(_cBracket),
                 Y = Pos.AnchorEnd(2),
-                Text = " Settings  ",
             };
-            _lBracket = new Label
+            _lBracket = new Label("[Shift+L]")
             {
                 X = Pos.Right(_cText),
                 Y = Pos.AnchorEnd(2),
-                Text = "[Shift+L]",
                 ColorScheme = TGuiTheme.LabelScheme(TGuiTheme.HelpLetterColor),
             };
-            _lText = new Label
+            _lText = new Label($" {Locale.Help.ChangeLanguage}")
             {
                 X = Pos.Right(_lBracket),
                 Y = Pos.AnchorEnd(2),
-                Text = $" {Locale.Help.ChangeLanguage}",
             };
 
             Add(_prevLabel, _currentLabel, _nextLabel,
@@ -126,7 +118,7 @@ namespace Jammer.TGui.Views
             _currentLabel.Text = $"▶ {Locale.Player.Current}: {curTitle}";
             _nextLabel.Text    = $"  {Locale.Player.Next}: {nextTitle}";
 
-            SetNeedsDraw();
+            SetNeedsDisplay();
         }
 
         private static string PrevTitle()

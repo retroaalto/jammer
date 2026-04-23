@@ -630,14 +630,6 @@ namespace Jammer
 
         public static SoundCloudClient ReturnSoundCloudClient()
         {
-            // Ensure client ID is fresh (respects TTL); fetches if expired or missing
-            if (string.IsNullOrEmpty(Preferences.clientID))
-            {
-                string id = SCClientIdFetcher.GetClientId().GetAwaiter().GetResult();
-                if (!string.IsNullOrEmpty(id))
-                    Preferences.clientID = id;
-            }
-
             if (Preferences.clientID == "")
             {
                 return new SoundCloudClient();
@@ -748,21 +740,8 @@ namespace Jammer
 
                 if (ex.Message.Contains("401"))
                 {
-                    Log.Info("SoundCloud 401 — invalidating cached client ID and fetching a new one.");
-                    Preferences.clientID = "";
-                    Preferences.clientIDFetchedAt = null;
-                    Preferences.SaveSettings();
-                    string newId = SCClientIdFetcher.FetchAndSave().GetAwaiter().GetResult();
-                    if (!string.IsNullOrEmpty(newId))
-                    {
-                        Utils.CustomTopErrorMessage = "Client ID refreshed automatically. Please retry.";
-                    }
-                    else
-                    {
-                        Utils.SCClientIdAlreadyLookedAndItsIncorrect = true;
-                        Utils.CustomTopErrorMessage = "Error: Could not refresh SoundCloud client ID automatically.";
-                    }
-                }
+                    Utils.SCClientIdAlreadyLookedAndItsIncorrect = true;
+                    Utils.CustomTopErrorMessage = "Error: Client ID is incorrect, please check your Client ID in Preferences.";}
                 else
                 {
                     Utils.CustomTopErrorMessage = "Error: Song not found, maybe the song is private or the URL is invalid.";
