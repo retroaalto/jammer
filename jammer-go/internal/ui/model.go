@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
@@ -116,6 +117,26 @@ var (
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
+// Prefs holds all user-configurable settings mirrored from settings.json.
+type Prefs struct {
+	SettingsPath              string
+	ForwardSeconds            int
+	RewindSeconds             int
+	ChangeVolumeBy            float64
+	IsAutoSave                bool
+	IsMediaButtons            bool
+	IsVisualizer              bool
+	ClientID                  string
+	ModifierKeyHelper         bool
+	IsIgnoreErrors            bool
+	ShowPlaylistPosition      bool
+	RssSkipAfterTime          bool
+	RssSkipAfterTimeValue     int
+	EnableQuickSearch         bool
+	FavoriteExplainer         bool
+	EnableQuickPlayFromSearch bool
+}
+
 type Model struct {
 	// core
 	p        *player.Player
@@ -124,15 +145,17 @@ type Model struct {
 	kb       *keybinds.Keybinds // loaded keybindings
 
 	// config
-	seekStep int  // seconds per seek keypress
-	autoPlay bool // play index 0 on Init (set when launched with -p)
+	seekStep int   // seconds per seek keypress
+	autoPlay bool  // play index 0 on Init (set when launched with -p)
+	prefs    Prefs // user settings
 
 	// view
-	view           viewKind
-	helpPageNum    int // current page in help screen (0-indexed)
-	settingsCursor int // current settings item cursor (0-indexed)
-	width          int
-	height         int
+	view            viewKind
+	helpPageNum     int // current page in help screen (0-indexed)
+	settingsCursor  int // current settings item cursor (0-indexed)
+	settingsPageNum int // current page in settings screen (0-indexed)
+	width           int
+	height          int
 
 	// songs view
 	songs       []player.Song
@@ -172,11 +195,11 @@ type Model struct {
 	modalIdx   int    // index for rename/info view (which song)
 }
 
-func New(p *player.Player, songsDir, plsDir string, seekStep int, defaultView string, kb *keybinds.Keybinds) Model {
-	return NewWithPlaylist(p, songsDir, plsDir, "", seekStep, defaultView, kb)
+func New(p *player.Player, songsDir, plsDir string, seekStep int, defaultView string, kb *keybinds.Keybinds, prefs Prefs) Model {
+	return NewWithPlaylist(p, songsDir, plsDir, "", seekStep, defaultView, kb, prefs)
 }
 
-func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekStep int, defaultView string, kb *keybinds.Keybinds) Model {
+func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekStep int, defaultView string, kb *keybinds.Keybinds, prefs Prefs) Model {
 	if seekStep <= 0 {
 		seekStep = 2
 	}
@@ -192,6 +215,7 @@ func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekSte
 		plsDir:   plsDir,
 		kb:       kb,
 		seekStep: seekStep,
+		prefs:    prefs,
 		songs:    p.Songs(),
 		playing:  p.Index(),
 		dlStates: make(map[int]*dlState),
@@ -1588,37 +1612,85 @@ func (m Model) renderHelp() string {
 }
 
 // renderSettings renders the settings screen.
-// Layout matches classic jammer: 3-column table (Settings│Value│ChangeValue)
-// wrapped inside the standard outer box.
+// Layout matches classic jammer: 3-column table (Settings│Value│Change Value (page/total))
+// 6 items per page, 3 pages total, letter keys A-R to change/toggle.
 func (m Model) renderSettings() string {
-	// Settings items: name, current value, how to change
-	settings := []struct {
+	boolStr := func(b bool) string {
+		if b {
+			return "True"
+		}
+		return "False"
+	}
+	fwdSec := fmt.Sprintf("%d sec", m.prefs.ForwardSeconds)
+	if m.prefs.ForwardSeconds == 0 {
+		fwdSec = "5 sec"
+	}
+	rwdSec := fmt.Sprintf("%d sec", m.prefs.RewindSeconds)
+	if m.prefs.RewindSeconds == 0 {
+		rwdSec = "5 sec"
+	}
+	volBy := fmt.Sprintf("%d %%", int(m.prefs.ChangeVolumeBy*100))
+	if m.prefs.ChangeVolumeBy == 0 {
+		volBy = "5 %"
+	}
+	rssVal := fmt.Sprintf("%d", m.prefs.RssSkipAfterTimeValue)
+	if m.prefs.RssSkipAfterTimeValue == 0 {
+		rssVal = "5"
+	}
+
+	type settingItem struct {
 		name       string
 		value      string
 		changeHint string
-	}{
-		{"Seek step", fmt.Sprintf("%ds", m.seekStep), "enter to change"},
-		{"Volume step", "5%", "enter to change"},
-		{"Auto-save", "on", "enter to toggle"},
-		{"Visualizer", "on", "enter to toggle"},
-		{"Default view", "3-song", "enter to change"},
+	}
+	allItems := []settingItem{
+		// Page 1 (A-F)
+		{"Forward seconds", fwdSec, "A To Change"},
+		{"Rewind seconds", rwdSec, "B To Change"},
+		{"Change Volume By", volBy, "C To Change"},
+		{"Playlist Auto Save", boolStr(m.prefs.IsAutoSave), "D To Toggle"},
+		{"Load Effects", "", "E To Load Effects settings"},
+		{"Toggle Media Buttons", boolStr(m.prefs.IsMediaButtons), "F To Toggle"},
+		// Page 2 (G-L)
+		{"Toggle Visualizer", boolStr(m.prefs.IsVisualizer), "G To Toggle Visualizer"},
+		{"Load Visualizer", "", "H To Load Visualizer settings"},
+		{"Set Soundcloud Client ID", "", "I To Set Soundcloud Client ID"},
+		{"Fetch Client ID", "", "J To Fetch and set Soundcloud Client ID"},
+		{"Toggle Key Modifier Helpers", boolStr(m.prefs.ModifierKeyHelper), "K To Toggle Key Helpers (restart required)"},
+		{"Toggle Skip Errors", boolStr(m.prefs.IsIgnoreErrors), "L To Toggle Skip Errors"},
+		// Page 3 (M-R)
+		{"Toggle Playlist Position", boolStr(m.prefs.ShowPlaylistPosition), "M To Toggle Playlist Position"},
+		{"Skip Rss after some time", boolStr(m.prefs.RssSkipAfterTime), "N To Toggle Skip Rss after some time"},
+		{"Amount of time to skip Rss", rssVal, "O To Set Amount of time to skip Rss"},
+		{"Toggle Quick Search", boolStr(m.prefs.EnableQuickSearch), "P To Toggle (will autoplay search result if exact match)"},
+		{"Favorite Explainer", boolStr(m.prefs.FavoriteExplainer), "Q To Toggle (show explainer when favoriting a song)"},
+		{"Toggle Quick Play From Search", boolStr(m.prefs.EnableQuickPlayFromSearch), "R To Toggle (automatically play the first search result when searching)"},
 	}
 
-	if m.settingsCursor >= len(settings) {
-		m.settingsCursor = len(settings) - 1
+	const itemsPerPage = 6
+	totalPages := (len(allItems) + itemsPerPage - 1) / itemsPerPage
+	page := m.settingsPageNum
+	if page < 0 {
+		page = 0
 	}
-	if m.settingsCursor < 0 {
-		m.settingsCursor = 0
+	if page >= totalPages {
+		page = totalPages - 1
 	}
+	start := page * itemsPerPage
+	end := start + itemsPerPage
+	if end > len(allItems) {
+		end = len(allItems)
+	}
+	pageItems := allItems[start:end]
 
 	// Column widths
 	innerW := m.width - 4
-	if innerW < 40 {
-		innerW = 40
+	if innerW < 60 {
+		innerW = 60
 	}
-	c1W := 31                     // space + 30 name
-	c2W := 21                     // space + 20 value
-	c3W := innerW - 2 - c1W - c2W // minus 2 separators
+	c1W := 31
+	c2W := 9
+	c3W := innerW - 2 - c1W - c2W
 	if c3W < 15 {
 		c3W = 15
 	}
@@ -1636,21 +1708,46 @@ func (m Model) renderSettings() string {
 	}
 	sepRow := strings.Repeat("─", c1W) + "┼" + strings.Repeat("─", c2W) + "┼" + strings.Repeat("─", c3W)
 
+	pageLabel := fmt.Sprintf("%d/%d", page+1, totalPages)
+
 	var inner strings.Builder
-	inner.WriteString(styleTitle.Render(row("Settings", "Value", "Change value (1/1)")) + "\n")
+	inner.WriteString(styleTitle.Render(row("Settings", "Value", "Change Value ("+pageLabel+")")) + "\n")
 	inner.WriteString(styleHelp.Render(sepRow) + "\n")
 
-	for i, s := range settings {
+	for i, s := range pageItems {
+		globalIdx := start + i
 		r := row(s.name, s.value, s.changeHint)
-		if i == m.settingsCursor {
+		if globalIdx == m.settingsCursor {
 			inner.WriteString(styleSelected.Render(r) + "\n")
 		} else {
 			inner.WriteString(styleHelp.Render(r) + "\n")
 		}
 	}
 
+	// Fill remaining rows so the table always has itemsPerPage rows
+	for i := len(pageItems); i < itemsPerPage; i++ {
+		inner.WriteString(styleHelp.Render(row("", "", "")) + "\n")
+	}
+
+	inner.WriteString(styleHelp.Render(sepRow) + "\n")
+
+	// Navigation hints: left-aligned "← prev page" and right-aligned "next page →"
+	var navLeft, navRight string
+	if page > 0 {
+		navLeft = "PgUp/← Prev page"
+	}
+	if page < totalPages-1 {
+		navRight = "PgDn/→ Next page"
+	}
+	navWidth := c1W + 1 + c2W + 1 + c3W
+	navLine := navLeft + strings.Repeat(" ", navWidth-len([]rune(navLeft))-len([]rune(navRight))) + navRight
+	inner.WriteString(styleHelp.Render(navLine) + "\n")
+
+	// Escape box below the table
 	inner.WriteString("\n")
-	inner.WriteString(styleHelp.Render("↑/↓: navigate  ESC: back"))
+	inner.WriteString(styleHelp.Render("╭──────────────────────╮") + "\n")
+	inner.WriteString(styleHelp.Render("│ To Main Menu: Escape │") + "\n")
+	inner.WriteString(styleHelp.Render("╰──────────────────────╯"))
 
 	return m.renderOuterBox(m.currentSongPath(), inner.String())
 }
@@ -1765,6 +1862,7 @@ func (m Model) handleSettingsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if keyStr == "esc" || m.kb.Is("ToMainMenu", keyStr) {
 		m.view = viewDefault
 		m.settingsCursor = 0
+		m.settingsPageNum = 0
 		return m, nil
 	}
 
@@ -1773,24 +1871,95 @@ func (m Model) handleSettingsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Navigation with up/down
-	if keyStr == "up" || m.kb.Is("PlaylistViewScrollup", keyStr) {
-		if m.settingsCursor > 0 {
+	const itemsPerPage = 6
+
+	// Page navigation
+	if keyStr == "pgdown" || keyStr == "right" {
+		m.settingsPageNum++
+		if m.settingsPageNum > 2 {
+			m.settingsPageNum = 2
+		}
+		m.settingsCursor = m.settingsPageNum * itemsPerPage
+		return m, nil
+	}
+	if keyStr == "pgup" || keyStr == "left" {
+		m.settingsPageNum--
+		if m.settingsPageNum < 0 {
+			m.settingsPageNum = 0
+		}
+		m.settingsCursor = m.settingsPageNum * itemsPerPage
+		return m, nil
+	}
+
+	// Cursor navigation within page
+	if keyStr == "up" {
+		if m.settingsCursor > m.settingsPageNum*itemsPerPage {
 			m.settingsCursor--
 		}
 		return m, nil
 	}
-
-	if keyStr == "down" || m.kb.Is("PlaylistViewScrolldown", keyStr) {
-		// 5 settings items
-		if m.settingsCursor < 4 {
+	if keyStr == "down" {
+		pageEnd := m.settingsPageNum*itemsPerPage + itemsPerPage - 1
+		if pageEnd > 17 {
+			pageEnd = 17
+		}
+		if m.settingsCursor < pageEnd {
 			m.settingsCursor++
 		}
 		return m, nil
 	}
 
-	// Phase 6 placeholder: settings values can be adjusted with left/right later
+	// Letter keys A-R to change/toggle corresponding setting
+	// A-F = page 1 (indices 0-5), G-L = page 2 (6-11), M-R = page 3 (12-17)
+	letterKeys := map[string]int{
+		"a": 0, "b": 1, "c": 2, "d": 3, "e": 4, "f": 5,
+		"g": 6, "h": 7, "i": 8, "j": 9, "k": 10, "l": 11,
+		"m": 12, "n": 13, "o": 14, "p": 15, "q": 16, "r": 17,
+	}
+	if idx, ok := letterKeys[keyStr]; ok {
+		m.settingsCursor = idx
+		m.settingsPageNum = idx / itemsPerPage
+		m = m.applySettingAction(idx)
+		return m, nil
+	}
+
+	// Enter applies action on currently focused item
+	if keyStr == "enter" {
+		m = m.applySettingAction(m.settingsCursor)
+		return m, nil
+	}
+
 	return m, nil
+}
+
+// applySettingAction toggles or changes the setting at index idx.
+func (m Model) applySettingAction(idx int) Model {
+	switch idx {
+	case 3: // Playlist Auto Save
+		m.prefs.IsAutoSave = !m.prefs.IsAutoSave
+	case 5: // Toggle Media Buttons
+		m.prefs.IsMediaButtons = !m.prefs.IsMediaButtons
+	case 6: // Toggle Visualizer
+		m.prefs.IsVisualizer = !m.prefs.IsVisualizer
+	case 10: // Toggle Key Modifier Helpers
+		m.prefs.ModifierKeyHelper = !m.prefs.ModifierKeyHelper
+	case 11: // Toggle Skip Errors
+		m.prefs.IsIgnoreErrors = !m.prefs.IsIgnoreErrors
+	case 12: // Toggle Playlist Position
+		m.prefs.ShowPlaylistPosition = !m.prefs.ShowPlaylistPosition
+	case 13: // Skip Rss after some time
+		m.prefs.RssSkipAfterTime = !m.prefs.RssSkipAfterTime
+	case 15: // Toggle Quick Search
+		m.prefs.EnableQuickSearch = !m.prefs.EnableQuickSearch
+	case 16: // Favorite Explainer
+		m.prefs.FavoriteExplainer = !m.prefs.FavoriteExplainer
+	case 17: // Toggle Quick Play From Search
+		m.prefs.EnableQuickPlayFromSearch = !m.prefs.EnableQuickPlayFromSearch
+	}
+	if m.prefs.SettingsPath != "" {
+		saveSettings(m.prefs)
+	}
+	return m
 }
 
 // handleRenameKey handles key input on the rename dialog
@@ -2167,4 +2336,41 @@ func truncate(s string, max int) string {
 func DefaultPlaylistsDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "jammer", "playlists")
+}
+
+// saveSettings writes the changed Prefs back to settings.json while preserving
+// all unknown fields (same raw-map approach as saveBackend in main.go).
+func saveSettings(p Prefs) {
+	data, err := os.ReadFile(p.SettingsPath)
+	if err != nil {
+		return
+	}
+	// Strip UTF-8 BOM if present
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		data = data[3:]
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return
+	}
+	raw["forwardSeconds"] = p.ForwardSeconds
+	raw["rewindSeconds"] = p.RewindSeconds
+	raw["changeVolumeBy"] = p.ChangeVolumeBy
+	raw["isAutoSave"] = p.IsAutoSave
+	raw["isMediaButtons"] = p.IsMediaButtons
+	raw["isVisualizer"] = p.IsVisualizer
+	raw["clientID"] = p.ClientID
+	raw["modifierKeyHelper"] = p.ModifierKeyHelper
+	raw["isIgnoreErrors"] = p.IsIgnoreErrors
+	raw["showPlaylistPosition"] = p.ShowPlaylistPosition
+	raw["rssSkipAfterTime"] = p.RssSkipAfterTime
+	raw["rssSkipAfterTimeValue"] = p.RssSkipAfterTimeValue
+	raw["EnableQuickSearch"] = p.EnableQuickSearch
+	raw["favoriteExplainer"] = p.FavoriteExplainer
+	raw["EnableQuickPlayFromSearch"] = p.EnableQuickPlayFromSearch
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(p.SettingsPath, out, 0o644)
 }

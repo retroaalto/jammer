@@ -19,10 +19,25 @@ import (
 // settings mirrors the fields of settings.json that main.go cares about.
 // Unknown fields are preserved via the raw map when saving.
 type settings struct {
-	BackEndType int    `json:"backEndType"`
-	SeekStep    int    `json:"seekStep"`    // seconds per seek keypress; 0 or missing → default 2
-	LoopType    int    `json:"LoopType"`    // 0=off, 1=all, 2=one
-	DefaultView string `json:"defaultView"` // "default" or "all"; empty → "default"
+	BackEndType               int     `json:"backEndType"`
+	SeekStep                  int     `json:"seekStep"`
+	LoopType                  int     `json:"LoopType"`
+	DefaultView               string  `json:"defaultView"`
+	ForwardSeconds            int     `json:"forwardSeconds"`
+	RewindSeconds             int     `json:"rewindSeconds"`
+	ChangeVolumeBy            float64 `json:"changeVolumeBy"`
+	IsAutoSave                bool    `json:"isAutoSave"`
+	IsMediaButtons            bool    `json:"isMediaButtons"`
+	IsVisualizer              bool    `json:"isVisualizer"`
+	ClientID                  string  `json:"clientID"`
+	ModifierKeyHelper         bool    `json:"modifierKeyHelper"`
+	IsIgnoreErrors            bool    `json:"isIgnoreErrors"`
+	ShowPlaylistPosition      bool    `json:"showPlaylistPosition"`
+	RssSkipAfterTime          bool    `json:"rssSkipAfterTime"`
+	RssSkipAfterTimeValue     int     `json:"rssSkipAfterTimeValue"`
+	EnableQuickSearch         bool    `json:"EnableQuickSearch"`
+	FavoriteExplainer         bool    `json:"favoriteExplainer"`
+	EnableQuickPlayFromSearch bool    `json:"EnableQuickPlayFromSearch"`
 }
 
 const defaultSeekStep = 2
@@ -169,11 +184,31 @@ func main() {
 	// Load keybindings from KeyData.ini
 	kb := keybinds.New()
 
+	// Build Prefs from settings for the UI.
+	prefs := ui.Prefs{
+		SettingsPath:              settingsPath,
+		ForwardSeconds:            cfg.ForwardSeconds,
+		RewindSeconds:             cfg.RewindSeconds,
+		ChangeVolumeBy:            cfg.ChangeVolumeBy,
+		IsAutoSave:                cfg.IsAutoSave,
+		IsMediaButtons:            cfg.IsMediaButtons,
+		IsVisualizer:              cfg.IsVisualizer,
+		ClientID:                  cfg.ClientID,
+		ModifierKeyHelper:         cfg.ModifierKeyHelper,
+		IsIgnoreErrors:            cfg.IsIgnoreErrors,
+		ShowPlaylistPosition:      cfg.ShowPlaylistPosition,
+		RssSkipAfterTime:          cfg.RssSkipAfterTime,
+		RssSkipAfterTimeValue:     cfg.RssSkipAfterTimeValue,
+		EnableQuickSearch:         cfg.EnableQuickSearch,
+		FavoriteExplainer:         cfg.FavoriteExplainer,
+		EnableQuickPlayFromSearch: cfg.EnableQuickPlayFromSearch,
+	}
+
 	var m ui.Model
 	if resolvedPlaylist != "" {
-		m = ui.NewWithPlaylist(p, songsDir, plsDir, resolvedPlaylist, seekStep, cfg.DefaultView, kb)
+		m = ui.NewWithPlaylist(p, songsDir, plsDir, resolvedPlaylist, seekStep, cfg.DefaultView, kb, prefs)
 	} else {
-		m = ui.New(p, songsDir, plsDir, seekStep, cfg.DefaultView, kb)
+		m = ui.New(p, songsDir, plsDir, seekStep, cfg.DefaultView, kb, prefs)
 	}
 	prog := tea.NewProgram(m)
 	if _, err := prog.Run(); err != nil {
