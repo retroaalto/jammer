@@ -399,15 +399,14 @@ func (m *Model) startViz(nBars int) tea.Cmd {
 // vizNBars returns the number of visualizer bars for the current terminal width.
 // Returns 0 if the terminal is too narrow to show a viz.
 func (m Model) vizNBars() int {
-	if m.width <= 50 {
+	if m.width <= 30 {
 		return 0
 	}
-	n := (m.width - 10) / 2
-	if n > 60 {
-		n = 60
-	}
-	if n < 4 {
-		return 0
+	// Match the inner content width of the outer box (│ …content… │)
+	// = total width - 4 (left border + margin + margin + right border)
+	n := m.width - 4
+	if n < 20 {
+		n = 20
 	}
 	return n
 }
@@ -438,6 +437,7 @@ func (m *Model) stepViz(nBars int) {
 		fHigh    = 16000.0
 	)
 	logRatio := math.Log(fHigh / fLow)
+
 	for i := 0; i < nBars; i++ {
 		loFreq := fLow * math.Exp(logRatio*float64(i)/float64(nBars))
 		hiFreq := fLow * math.Exp(logRatio*float64(i+1)/float64(nBars))
@@ -460,10 +460,10 @@ func (m *Model) stepViz(nBars int) {
 			sum += v
 		}
 		avg := float64(sum) / float64(hiBin-loBin)
-		avg = math.Sqrt(avg) * 3
-		// Rising gain: compensate for natural high-frequency roll-off.
-		// Ramps from 1× at the left edge to 5× at the right edge.
-		gain := 1.0 + 4.0*(float64(i)/float64(nBars-1))
+		// Power scaling + multiplier tuned for raw (unnormalized) FFT magnitudes.
+		avg = math.Pow(avg, 0.45) * 2.5
+		// Small rising gain for high-frequency compensation.
+		gain := 1.0 + 1.2*(float64(i)/float64(nBars-1))
 		avg *= gain
 		if avg > 1 {
 			avg = 1
@@ -471,13 +471,13 @@ func (m *Model) stepViz(nBars int) {
 		m.vizTargets[i] = avg
 	}
 
-	// Smooth bars toward targets: fast attack (0.6), slower decay (0.3).
+	// Smooth bars toward targets: fast attack, moderate decay.
 	for i := range m.vizBars {
 		delta := m.vizTargets[i] - m.vizBars[i]
 		if delta > 0 {
-			m.vizBars[i] += delta * 0.6
+			m.vizBars[i] += delta * 0.5
 		} else {
-			m.vizBars[i] += delta * 0.3
+			m.vizBars[i] += delta * 0.45
 		}
 	}
 }
@@ -1403,7 +1403,7 @@ func (m Model) renderSongsDefault() string {
 	b.WriteString(helpBar + "\n")
 
 	// ── Visualizer row ────────────────────────────────────────────────────────
-	b.WriteString(" " + m.renderVisualizer() + "\n")
+	b.WriteString(m.renderVisualizer() + "\n")
 
 	// ── Progress/time bar ─────────────────────────────────────────────────────
 	b.WriteString(boxStyle.Render(m.renderProgressBar()))
@@ -1520,7 +1520,7 @@ func (m Model) renderSongsAll() string {
 	b.WriteString(helpBar + "\n")
 
 	// ── Visualizer row ────────────────────────────────────────────────────────
-	b.WriteString(" " + m.renderVisualizer() + "\n")
+	b.WriteString(m.renderVisualizer() + "\n")
 
 	// ── Progress/time bar ─────────────────────────────────────────────────────
 	b.WriteString(boxStyle.Render(m.renderProgressBar()))
@@ -2167,9 +2167,13 @@ func (m Model) renderVisualizer() string {
 		return strings.Repeat("▁", 20)
 	}
 
-	// Scale viz bars to fill available width (wider display)
-	// Use full width minus small margin
-	barWidth := (m.width - 4) / len(m.vizBars)
+	// Scale viz bars to fill available width.
+	// Full inner width of outer box = m.width - 4 ("│ " and " │" wrappers)
+	avail := m.width - 4
+	if avail < len(m.vizBars) {
+		avail = len(m.vizBars)
+	}
+	barWidth := avail / len(m.vizBars)
 	if barWidth < 1 {
 		barWidth = 1
 	}
@@ -2182,7 +2186,7 @@ func (m Model) renderVisualizer() string {
 		if idx >= len(barChars) {
 			idx = len(barChars) - 1
 		}
-		bars = append(bars, string(barChars[idx]))
+		bars = append(bars, strings.Repeat(string(barChars[idx]), barWidth))
 	}
 	return styleBarFill.Render(strings.Join(bars, ""))
 }

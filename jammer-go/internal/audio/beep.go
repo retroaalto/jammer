@@ -116,12 +116,13 @@ func (t *tapStreamer) fftData() []float32 {
 // ── beepStream ────────────────────────────────────────────────────────────────
 
 type beepStream struct {
-	raw   beep.StreamSeekCloser
-	ctrl  *beep.Ctrl
-	vol   *effects.Volume
-	tap   *tapStreamer
-	sr    beep.SampleRate
-	state int32 // atomic: ActiveStopped / ActivePlaying / ActivePaused
+	raw     beep.StreamSeekCloser
+	ctrl    *beep.Ctrl
+	vol     *effects.Volume
+	tap     *tapStreamer
+	sr      beep.SampleRate
+	state   int32 // atomic: ActiveStopped / ActivePlaying / ActivePaused
+	started int32 // atomic: 0 = not yet added to speaker, 1 = added
 }
 
 func (s *beepStream) Play(restart bool) error {
@@ -133,15 +134,20 @@ func (s *beepStream) Play(restart bool) error {
 	atomic.StoreInt32(&s.state, int32(ActivePlaying))
 	s.ctrl.Paused = false
 
-	done := make(chan struct{})
-	speaker.Play(beep.Seq(s.tap, beep.Callback(func() {
-		// Only mark stopped if we weren't paused or already freed.
-		if atomic.LoadInt32(&s.state) == int32(ActivePlaying) {
-			atomic.StoreInt32(&s.state, int32(ActiveStopped))
-		}
-		close(done)
-	})))
-	_ = done // fire-and-forget; WatchEnd polls IsActive()
+	// Only add to the speaker mixer on the first play.
+	// speaker.Play() stacks streams; calling it again on the same stream
+	// would mix multiple copies, causing playback speedup.
+	if atomic.CompareAndSwapInt32(&s.started, 0, 1) {
+		done := make(chan struct{})
+		speaker.Play(beep.Seq(s.tap, beep.Callback(func() {
+			// Only mark stopped if we weren't paused or already freed.
+			if atomic.LoadInt32(&s.state) == int32(ActivePlaying) {
+				atomic.StoreInt32(&s.state, int32(ActiveStopped))
+			}
+			close(done)
+		})))
+		_ = done // fire-and-forget; WatchEnd polls IsActive()
+	}
 	return nil
 }
 
