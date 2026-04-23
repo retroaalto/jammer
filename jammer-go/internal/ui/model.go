@@ -224,15 +224,16 @@ func vizTick() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
+	cmds := []tea.Cmd{tick(), m.startViz(0)}
 	if m.autoPlay && len(m.songs) > 0 {
-		return tea.Batch(tick(), func() tea.Msg {
+		cmds = append(cmds, func() tea.Msg {
 			if err := m.p.PlayIndex(0); err != nil {
 				jlog.Errorf("auto-play on start: %v", err)
 			}
 			return nil
-		}, m.downloadIfNeeded(0), m.startViz(0))
+		}, m.downloadIfNeeded(0))
 	}
-	return tick()
+	return tea.Batch(cmds...)
 }
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -378,9 +379,9 @@ func (m Model) vizNBars() int {
 	if m.width <= 50 {
 		return 0
 	}
-	n := (m.width - 40) / 3
-	if n > 20 {
-		n = 20
+	n := (m.width - 10) / 2
+	if n > 60 {
+		n = 60
 	}
 	if n < 4 {
 		return 0
@@ -1223,15 +1224,18 @@ func (m Model) renderSongsDefault() string {
 
 		// Previous song
 		prevTitle := truncate(m.songs[prevIdx].DisplayTitle(), m.width-20)
-		b.WriteString(styleHelp.Render(fmt.Sprintf(" previous : %s\n", prevTitle)))
+		prevLine := fmt.Sprintf("  %-10s : %s", "previous", prevTitle)
+		b.WriteString(styleHelp.Render(prevLine) + "\n")
 
 		// Current song (highlighted)
 		currTitle := truncate(m.songs[currIdx].DisplayTitle(), m.width-20)
-		b.WriteString(stylePlaying.Render(fmt.Sprintf(" current  : %s\n", currTitle)))
+		currLine := fmt.Sprintf("  %-10s : %s", "current", currTitle)
+		b.WriteString(stylePlaying.Render(currLine) + "\n")
 
 		// Next song
 		nextTitle := truncate(m.songs[nextIdx].DisplayTitle(), m.width-20)
-		b.WriteString(styleHelp.Render(fmt.Sprintf(" next     : %s\n", nextTitle)))
+		nextLine := fmt.Sprintf("  %-10s : %s", "next", nextTitle)
+		b.WriteString(styleHelp.Render(nextLine) + "\n")
 	}
 
 	// Spacer rows to fill screen
@@ -1783,11 +1787,13 @@ func (m Model) renderAddSong() string {
 // renderVisualizer renders FFT visualization bars
 func (m Model) renderVisualizer() string {
 	if len(m.vizBars) == 0 {
-		return ""
+		// Return placeholder visualizer if not initialized yet
+		return strings.Repeat("▁", 20)
 	}
 
-	// Scale viz bars to fit available width (rough estimation)
-	barWidth := (m.width - 10) / len(m.vizBars)
+	// Scale viz bars to fill available width (wider display)
+	// Use full width minus small margin
+	barWidth := (m.width - 4) / len(m.vizBars)
 	if barWidth < 1 {
 		barWidth = 1
 	}
