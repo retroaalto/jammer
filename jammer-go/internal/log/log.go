@@ -1,6 +1,7 @@
 // Package log provides simple file-based logging for jammer.
 //
-// Log output goes to ~/jammer/jammer.log.  The TUI uses the alternate screen,
+// Log output goes to the jammer state directory (XDG_STATE_HOME/jammer or
+// ~/jammer for legacy installs).  The TUI uses the alternate screen,
 // so writing to stderr would be invisible; a dedicated log file is the only
 // reliable way to observe runtime behaviour.
 //
@@ -19,6 +20,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/jooapa/jammer/jammer-go/internal/dirs"
 )
 
 var (
@@ -26,7 +29,7 @@ var (
 	file *os.File
 )
 
-// Init opens (or creates) the log file at ~/jammer/jammer.log.
+// Init opens (or creates) the log file inside the jammer state directory.
 // Safe to call more than once; subsequent calls are no-ops.
 func Init() error {
 	mu.Lock()
@@ -34,11 +37,7 @@ func Init() error {
 	if file != nil {
 		return nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	dir := filepath.Join(home, "jammer")
+	dir := dirs.State()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

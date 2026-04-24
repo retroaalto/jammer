@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/jooapa/jammer/jammer-go/internal/audio"
+	"github.com/jooapa/jammer/jammer-go/internal/dirs"
 	"github.com/jooapa/jammer/jammer-go/internal/keybinds"
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
@@ -90,6 +91,12 @@ func main() {
 	}
 	defer jlog.Close()
 	jlog.Info("jammer-go starting up")
+	if dirs.IsLegacy() {
+		jlog.Infof("config location: legacy (%s)", dirs.Config())
+	} else {
+		jlog.Infof("config location: XDG (data=%s config=%s state=%s cache=%s)",
+			dirs.Data(), dirs.Config(), dirs.State(), dirs.Cache())
+	}
 
 	exeDir, err := execDir()
 	if err != nil {
@@ -97,13 +104,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	settingsPath := filepath.Join(jammerDir(""), "settings.json")
+	settingsPath := filepath.Join(dirs.Config(), "settings.json")
 	cfg := loadSettings(settingsPath)
 
 	// ── CLI-only commands (no TUI, exit after running) ──────────────────────
 	args := os.Args[1:]
-	plsDir0 := jammerDir("playlists")
-	songsDir0 := jammerDir("songs")
+	plsDir0 := filepath.Join(dirs.Data(), "playlists")
+	songsDir0 := filepath.Join(dirs.Data(), "songs")
 	for _, d := range []string{plsDir0, songsDir0} {
 		_ = os.MkdirAll(d, 0755)
 	}
@@ -305,8 +312,8 @@ func main() {
 	}
 	defer backend.Free()
 
-	songsDir := jammerDir("songs")
-	plsDir := jammerDir("playlists")
+	songsDir := filepath.Join(dirs.Data(), "songs")
+	plsDir := filepath.Join(dirs.Data(), "playlists")
 
 	// Ensure directories exist.
 	for _, d := range []string{songsDir, plsDir} {
@@ -450,14 +457,6 @@ func resolvePlaylist(plsDir, name string) string {
 		}
 	}
 	return ""
-}
-
-func jammerDir(sub string) string {
-	home, _ := os.UserHomeDir()
-	if sub == "" {
-		return filepath.Join(home, "jammer")
-	}
-	return filepath.Join(home, "jammer", sub)
 }
 
 // playlistPath returns the full path for a new playlist with the given name,

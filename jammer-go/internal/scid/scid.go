@@ -16,12 +16,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jooapa/jammer/jammer-go/internal/dirs"
 )
 
 // cacheFile returns the path to the on-disk client_id cache.
 func cacheFile() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "jammer", "sc_client_id.json")
+	return filepath.Join(dirs.Cache(), "sc_client_id.json")
 }
 
 type cachedID struct {

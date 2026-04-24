@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jooapa/jammer/jammer-go/internal/dirs"
 )
 
 // Keybinds holds all loaded keybindings as string-to-keystring mappings
@@ -16,7 +18,7 @@ type Keybinds struct {
 	reverse map[string]string
 }
 
-// New loads keybindings from ~/jammer/KeyData.ini, falling back to defaults if not found
+// New loads keybindings from the jammer config directory (KeyData.ini), falling back to defaults if not found
 func New() *Keybinds {
 	kb := &Keybinds{
 		bindings: make(map[string]string),
@@ -37,12 +39,7 @@ func New() *Keybinds {
 
 // loadFromFile reads KeyData.ini and populates bindings
 func (kb *Keybinds) loadFromFile() error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-
-	filePath := filepath.Join(homeDir, "jammer", "KeyData.ini")
+	filePath := filepath.Join(dirs.Config(), "KeyData.ini")
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -251,17 +248,13 @@ func (kb *Keybinds) GetAll() map[string]string {
 	return result
 }
 
-// Save writes the current bindings back to ~/jammer/KeyData.ini.
+// Save writes the current bindings back to the jammer config directory (KeyData.ini).
 func (kb *Keybinds) Save() error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
+	configDir := dirs.Config()
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return err
 	}
-	jammerDir := filepath.Join(homeDir, "jammer")
-	if err := os.MkdirAll(jammerDir, 0o755); err != nil {
-		return err
-	}
-	filePath := filepath.Join(jammerDir, "KeyData.ini")
+	filePath := filepath.Join(configDir, "KeyData.ini")
 	f, err := os.Create(filePath)
 	if err != nil {
 		return err

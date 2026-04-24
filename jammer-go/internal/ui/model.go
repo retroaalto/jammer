@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jooapa/jammer/jammer-go/internal/dirs"
 	"github.com/jooapa/jammer/jammer-go/internal/downloader"
 	"github.com/jooapa/jammer/jammer-go/internal/keybinds"
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
@@ -1391,14 +1392,9 @@ func (m *Model) toggleFavorite(idx int) string {
 	return "Added to Favorites"
 }
 
-// loadLogLines reads ~/jammer/jammer.log into m.logLines.
+// loadLogLines reads the jammer log file into m.logLines.
 func (m *Model) loadLogLines() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		m.logLines = []string{"Could not find home directory"}
-		return
-	}
-	logPath := filepath.Join(home, "jammer", "jammer.log")
+	logPath := filepath.Join(dirs.State(), "jammer.log")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		m.logLines = []string{"Log file not found: " + logPath}
@@ -3650,8 +3646,7 @@ func truncate(s string, max int) string {
 // songsDir and plsDir are wired from main.go via an exported helper so
 // the model doesn't need to import os itself for the path check.
 func DefaultPlaylistsDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "jammer", "playlists")
+	return filepath.Join(dirs.Data(), "playlists")
 }
 
 // renderSettingsInput renders the text-input overlay for changing a settings value.

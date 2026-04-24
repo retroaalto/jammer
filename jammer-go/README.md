@@ -50,7 +50,7 @@ go build -o jammer-go .
 ## Usage
 
 ```sh
-./jammer-go                   # Play songs from ~/jammer/songs/
+./jammer-go                   # Play songs from the songs directory
 ./jammer-go -p myplaylist     # Load a playlist and start playing immediately
 ./jammer-go -b                # Use BASS audio backend for this session
 ./jammer-go -b -p lofi        # BASS backend + playlist
@@ -60,45 +60,172 @@ go build -o jammer-go .
 
 | Flag | Description |
 |---|---|
-| `-p <name>` | Load a named playlist from `~/jammer/playlists/` and auto-play on start. Matches by exact filename, with or without extension, or case-insensitive. |
+| `-p <name>` | Load a named playlist from the playlists directory and auto-play on start. Matches by exact filename, with or without extension, or case-insensitive. |
 | `-b` | Force BASS backend for this session only (does not persist to `settings.json`). |
 
 ---
 
 ## Directory layout
 
-All data lives under `~/jammer/`:
+jammer-go follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/).  
+**Legacy users:** if `~/jammer/` already exists, it is used for everything (no migration needed).
+
+### XDG layout (new installs)
 
 ```
-~/jammer/
+$XDG_DATA_HOME/jammer/          (~/.local/share/jammer/)
 ├── songs/           # Scanned for local audio files on startup
-├── playlists/       # Playlist files (.jammer, .m3u, .m3u8)
+└── playlists/       # Playlist files (.jammer, .m3u, .m3u8)
+
+$XDG_CONFIG_HOME/jammer/        (~/.config/jammer/)
 ├── settings.json    # User config
-├── jammer.log       # Debug log (INFO/ERRO/KEY events)
+└── KeyData.ini      # Custom keybindings (optional)
+
+$XDG_STATE_HOME/jammer/         (~/.local/state/jammer/)
+└── jammer.log       # Debug log (INFO/ERRO/KEY events)
+
+$XDG_CACHE_HOME/jammer/         (~/.cache/jammer/)
 └── sc_client_id.json  # Cached SoundCloud client_id (7-day TTL)
 ```
 
-Both `songs/` and `playlists/` are created automatically on first launch.
+### Legacy layout (existing `~/jammer/` installs)
+
+```
+~/jammer/
+├── songs/
+├── playlists/
+├── settings.json
+├── KeyData.ini
+├── jammer.log
+└── sc_client_id.json
+```
+
+Both `songs/` and `playlists/` are created automatically on first launch. The active config location is logged at startup.
 
 ---
 
 ## settings.json
 
+Full default values — copy this as a starting point:
+
 ```json
 {
   "backEndType": 0,
   "seekStep": 2,
-  "LoopType": 0
+  "LoopType": 0,
+  "defaultView": "",
+  "forwardSeconds": 0,
+  "rewindSeconds": 0,
+  "changeVolumeBy": 0,
+  "isAutoSave": false,
+  "isMediaButtons": false,
+  "isVisualizer": false,
+  "clientID": "",
+  "modifierKeyHelper": false,
+  "isIgnoreErrors": false,
+  "showPlaylistPosition": false,
+  "rssSkipAfterTime": false,
+  "rssSkipAfterTimeValue": 0,
+  "EnableQuickSearch": false,
+  "favoriteExplainer": false,
+  "EnableQuickPlayFromSearch": false,
+  "searchResultCount": 0,
+  "showTitle": false,
+  "titleText": "",
+  "titleAnimationSpeed": 0,
+  "titleAnimationInterval": 0
 }
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `backEndType` | int | `0` | Audio backend: `0` = beep (pure Go), `1` = BASS |
-| `seekStep` | int | `2` | Seconds to seek per `←`/`→` keypress |
-| `LoopType` | int | `0` | Loop mode on startup: `0` = loop all, `1` = loop off, `2` = loop one |
+| `seekStep` | int | `2` | Fallback seek seconds for `←`/`→` when `forwardSeconds`/`rewindSeconds` are `0` |
+| `LoopType` | int | `0` | Initial loop mode: `0` = loop all, `1` = loop off, `2` = loop one |
+| `defaultView` | string | `""` | Initial TUI view: `"all"` = full scrollable list, anything else = 3-song snippet |
+| `forwardSeconds` | int | `0` | Seconds per forward-seek keypress. `0` defers to `seekStep` |
+| `rewindSeconds` | int | `0` | Seconds per rewind keypress. `0` defers to `seekStep` |
+| `changeVolumeBy` | float | `0.0` | Persisted/displayed only — volume keys currently hardcode 5%/1% steps |
+| `isAutoSave` | bool | `false` | Persisted/displayed only — playlists are always saved on change |
+| `isMediaButtons` | bool | `false` | Persisted/displayed only — OS media-button integration not yet implemented |
+| `isVisualizer` | bool | `false` | Persisted/displayed only — the visualizer currently always runs |
+| `clientID` | string | `""` | SoundCloud client ID — stored for future use, not yet wired to the downloader |
+| `modifierKeyHelper` | bool | `false` | Persisted/displayed only — modifier-key hints not yet implemented |
+| `isIgnoreErrors` | bool | `false` | Persisted/displayed only — download errors are always skipped |
+| `showPlaylistPosition` | bool | `false` | Persisted/displayed only — position display toggling not yet implemented |
+| `rssSkipAfterTime` | bool | `false` | Persisted/displayed only — RSS auto-skip not yet implemented |
+| `rssSkipAfterTimeValue` | int | `0` | Persisted/displayed only — pairs with `rssSkipAfterTime` (not yet implemented) |
+| `EnableQuickSearch` | bool | `false` | Persisted/displayed only — exact-match autoplay from search not yet implemented |
+| `favoriteExplainer` | bool | `false` | Persisted/displayed only — favorites confirmation dialog not yet implemented |
+| `EnableQuickPlayFromSearch` | bool | `false` | Persisted/displayed only — auto-play first search result not yet implemented |
+| `searchResultCount` | int | `0` | Max online search results to return. `0` → `10`; capped at `20` |
+| `showTitle` | bool | `false` | Show an animated title banner at the top of the UI |
+| `titleText` | string | `""` | Custom title text. `""` → `"Jammer - light-weight CLI music player"`. Requires `showTitle: true` |
+| `titleAnimationSpeed` | int | `0` | Milliseconds per animation step. `0` → `80`. Requires `showTitle: true` |
+| `titleAnimationInterval` | int | `0` | Milliseconds to pause at the left end before reversing. `0` → `1000`. Requires `showTitle: true` |
 
 Missing or zero values fall back to the defaults listed above. Unknown fields are preserved verbatim. BOM-prefixed UTF-8 files are handled transparently.
+
+---
+
+## KeyData.ini
+
+Custom keybindings file. If absent, all defaults below are used. Copy only the bindings you want to change — missing entries keep their defaults.
+
+```ini
+[Keybinds]
+ToMainMenu = Escape
+PlayPause = Spacebar
+Quit = Q
+NextSong = N
+PreviousSong = P
+PlaySong = Shift + P
+Forward5s = RightArrow
+Backwards5s = LeftArrow
+VolumeUp = UpArrow
+VolumeDown = DownArrow
+VolumeUpByOne = Shift + UpArrow
+VolumeDownByOne = Shift + DownArrow
+Shuffle = S
+SaveAsPlaylist = Shift + Alt + S
+SaveCurrentPlaylist = Shift + S
+ShufflePlaylist = Alt + S
+Loop = L
+Mute = M
+ShowHidePlaylist = F
+ListAllPlaylists = Shift + F
+Help = H
+Settings = C
+ToSongStart = 0
+ToSongEnd = 9
+ToggleInfo = I
+SearchInPlaylist = F3
+SearchByAuthor = Shift + F3
+CurrentState = F12
+CommandHelpScreen = Tab
+DeleteCurrentSong = Delete
+HardDeleteCurrentSong = Shift + Delete
+AddSongToPlaylist = Shift + A
+AddCurrentSongToFavorites = Ctrl + F
+ShowSongsInPlaylists = Shift + D
+PlayOtherPlaylist = Shift + O
+RedownloadCurrentSong = Shift + B
+EditKeybindings = Shift + E
+ChangeLanguage = Shift + L
+ChangeTheme = Shift + T
+PlayRandomSong = R
+ChangeSoundFont = Shift + G
+GroupMenu = Ctrl + G
+AddToGroup = G
+PlaylistViewScrollup = PageUp
+PlaylistViewScrolldown = PageDown
+Choose = Enter
+Search = Ctrl + Y
+ShowLog = Ctrl + L
+ExitRssFeed = E
+BackEndChange = B
+RenameSong = F2
+```
 
 ---
 
@@ -143,7 +270,7 @@ Missing or zero values fall back to the defaults listed above. Unknown fields ar
 
 ## Playlist format
 
-Playlists are stored in `~/jammer/playlists/`.
+Playlists are stored in the playlists directory (see [Directory layout](#directory-layout)).
 
 ### `.jammer` — Classic format (default)
 
@@ -239,7 +366,7 @@ After a successful download:
 
 ## Logging
 
-All events are appended to `~/jammer/jammer.log`:
+All events are appended to `jammer.log` in the state directory (`~/.local/state/jammer/` for XDG installs, `~/jammer/` for legacy). The active path is logged at startup.
 
 ```
 15:04:05.123 INFO  ui: play song index=2 title="Artist - Track"
