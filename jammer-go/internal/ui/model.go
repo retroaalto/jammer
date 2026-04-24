@@ -43,6 +43,11 @@ type downloadDoneMsg struct {
 	err   error
 }
 
+type searchDoneMsg struct {
+	results []downloader.SearchResult
+	err     error
+}
+
 // ── Views ─────────────────────────────────────────────────────────────────────
 
 type viewKind int
@@ -61,6 +66,8 @@ const (
 	viewSaveAs                        // save playlist as new name (Phase 2 #8)
 	viewLog                           // scrollable log viewer (Phase 2 #12)
 	viewShowSongs                     // read-only song list from another playlist (Phase 2 #11)
+	viewSearchQuery                   // online search query input (Phase 2 #5)
+	viewSearchResults                 // online search results list (Phase 2 #5)
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -163,6 +170,7 @@ type Prefs struct {
 	EnableQuickSearch         bool
 	FavoriteExplainer         bool
 	EnableQuickPlayFromSearch bool
+	SearchResultCount         int
 	ShowTitle                 bool
 	TitleText                 string
 	TitleAnimationSpeed       int // ms per scanner step (default 80)
@@ -243,6 +251,15 @@ type Model struct {
 	showSongsOffset   int
 	showSongsName     string // playlist name being shown
 	showSongsPickMode bool   // when true, playlist picker is in "show songs" mode (not load-and-play)
+
+	// Phase 2: online search (Ctrl+Y)
+	searchPlatform string
+	searchQuery    string
+	searchResults  []downloader.SearchResult
+	searchCursor   int
+	searchOffset   int
+	searchLoading  bool
+	searchErr      string
 
 	// Phase 2: status flash message (shown in progress bar area briefly)
 	statusMsg     string
@@ -420,15 +437,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Persist enriched metadata back to the playlist file.
 			m.saveCurrentPlaylist()
 
-			// Auto-play if this is the currently selected track and player is stopped.
-			if msg.index == m.playing && m.p.State() == player.StateStopped {
-				jlog.Infof("auto-play after download index=%d", msg.index)
-				if err := m.p.PlayIndex(msg.index); err != nil {
-					jlog.Errorf("auto-play failed index=%d: %v", msg.index, err)
-				}
-				return m, m.startViz(0)
+		// Auto-play if this is the currently selected track and player is stopped.
+		if msg.index == m.playing && m.p.State() == player.StateStopped {
+			jlog.Infof("auto-play after download index=%d", msg.index)
+			if err := m.p.PlayIndex(msg.index); err != nil {
+				jlog.Errorf("auto-play failed index=%d: %v", msg.index, err)
 			}
+			return m, m.startViz(0)
 		}
+	}
+
+	case searchDoneMsg:
+		m.searchLoading = false
+		if msg.err != nil {
+			m.searchErr = msg.err.Error()
+			jlog.Errorf("search failed: %v", msg.err)
+			return m, nil
+		}
+		m.searchResults = msg.results
+		m.searchCursor = 0
+		m.searchOffset = 0
+		m.searchErr = ""
+		m.view = viewSearchResults
+		return m, nil
 
 	case vizTickMsg:
 		if m.p.State() == player.StatePlaying {
@@ -627,6 +658,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.view == viewShowSongs {
 		return m.handleShowSongsKey(msg)
+	}
+	if m.view == viewSearchQuery {
+		return m.handleSearchQueryKey(msg)
+	}
+	if m.view == viewSearchResults {
+		return m.handleSearchResultsKey(msg)
 	}
 
 	// Quit
@@ -887,7 +924,18 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Search/filter
-	if m.kb.Is("Search", keyStr) || m.kb.Is("SearchInPlaylist", keyStr) || keyStr == "/" {
+	if m.kb.Is("Search", keyStr) {
+		m.view = viewSearchQuery
+		m.searchPlatform = "youtube"
+		m.searchQuery = ""
+		m.searchResults = nil
+		m.searchCursor = 0
+		m.searchOffset = 0
+		m.searchLoading = false
+		m.searchErr = ""
+		return m, nil
+	}
+	if m.kb.Is("SearchInPlaylist", keyStr) || keyStr == "/" {
 		m.filtering = true
 		m.filter = ""
 		m.filteredIdxs = nil
@@ -1016,7 +1064,14 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// #12 Show log (Ctrl+L)
 	if m.kb.Is("ShowLog", keyStr) {
 		m.loadLogLines()
-		m.logOffset = len(m.logLines) // start scrolled to bottom
+		visibleLines := m.height - 6
+		if visibleLines < 1 {
+			visibleLines = 1
+		}
+		m.logOffset = len(m.logLines) - visibleLines
+		if m.logOffset < 0 {
+			m.logOffset = 0
+		}
 		m.view = viewLog
 		return m, nil
 	}
@@ -1378,6 +1433,16 @@ func readNextDownloadEvent(i int, progressCh <-chan downloader.Progress, doneCh 
 	}
 }
 
+// performSearchCmd runs an online search via yt-dlp and returns a searchDoneMsg.
+func performSearchCmd(platform, query string, limit int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		results, err := downloader.Search(ctx, query, platform, limit)
+		return searchDoneMsg{results: results, err: err}
+	}
+}
+
 func (m Model) getOrCreateDlState(i int) *dlState {
 	if m.dlStates[i] == nil {
 		m.dlStates[i] = &dlState{}
@@ -1526,6 +1591,10 @@ func (m Model) View() tea.View {
 		b.WriteString(m.renderLog())
 	case viewShowSongs:
 		b.WriteString(m.renderShowSongs())
+	case viewSearchQuery:
+		b.WriteString(m.renderSearchQuery())
+	case viewSearchResults:
+		b.WriteString(m.renderSearchResults())
 	case viewPlaylists:
 		// Playlists view: show song path in outer box header
 		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderPlaylists()))
@@ -2127,6 +2196,8 @@ func (m Model) renderSettings() string {
 		{"Toggle Quick Search", boolStr(m.prefs.EnableQuickSearch), "P To Toggle (will autoplay search result if exact match)"},
 		{"Favorite Explainer", boolStr(m.prefs.FavoriteExplainer), "Q To Toggle (show explainer when favoriting a song)"},
 		{"Toggle Quick Play From Search", boolStr(m.prefs.EnableQuickPlayFromSearch), "R To Toggle (automatically play the first search result when searching)"},
+		// Page 4 (S)
+		{"Search Result Count", fmt.Sprintf("%d", m.prefs.SearchResultCount), "S To Change (number of online search results, default 10)"},
 	}
 
 	const itemsPerPage = 6
@@ -2362,8 +2433,8 @@ func (m Model) handleSettingsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if keyStr == "down" {
 		pageEnd := m.settingsPageNum*itemsPerPage + itemsPerPage - 1
-		if pageEnd > 17 {
-			pageEnd = 17
+		if pageEnd > 18 {
+			pageEnd = 18
 		}
 		if m.settingsCursor < pageEnd {
 			m.settingsCursor++
@@ -2377,6 +2448,7 @@ func (m Model) handleSettingsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		"a": 0, "b": 1, "c": 2, "d": 3, "e": 4, "f": 5,
 		"g": 6, "h": 7, "i": 8, "j": 9, "k": 10, "l": 11,
 		"m": 12, "n": 13, "o": 14, "p": 15, "q": 16, "r": 17,
+		"s": 18,
 	}
 	if idx, ok := letterKeys[keyStr]; ok {
 		m.settingsCursor = idx
@@ -2452,6 +2524,12 @@ func (m Model) applySettingAction(idx int) Model {
 		m.prefs.FavoriteExplainer = !m.prefs.FavoriteExplainer
 	case 16: // Toggle Quick Play From Search
 		m.prefs.EnableQuickPlayFromSearch = !m.prefs.EnableQuickPlayFromSearch
+	case 18: // Search Result Count
+		m.settingsInputIdx = idx
+		m.settingsInputPrompt = "Enter Search Result Count (number, default 10, max 20):"
+		m.modalInput = fmt.Sprintf("%d", m.prefs.SearchResultCount)
+		m.view = viewSettingsInput
+		return m
 	}
 	if m.prefs.SettingsPath != "" {
 		saveSettings(m.prefs)
@@ -2955,6 +3033,195 @@ func (m Model) handleShowSongsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ── Phase 2: Online Search (#5) ───────────────────────────────────────────────
+
+func (m Model) renderSearchQuery() string {
+	var b strings.Builder
+	platform := "YouTube"
+	if m.searchPlatform == "soundcloud" {
+		platform = "SoundCloud"
+	}
+	b.WriteString(styleTitle.Render(fmt.Sprintf("  Search (%s)", platform)) + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Enter query:") + "\n\n")
+	cursor := styleBarFill.Render("█")
+	if m.searchLoading {
+		b.WriteString(styleHelp.Render("  ") + m.searchQuery + cursor + "\n")
+		b.WriteString(styleHelp.Render("\n  Searching...") + "\n")
+	} else if m.searchErr != "" {
+		b.WriteString(styleHelp.Render("  ") + m.searchQuery + cursor + "\n")
+		b.WriteString(styleHelp.Render(fmt.Sprintf("\n  Error: %s", truncate(m.searchErr, m.width-10))) + "\n")
+	} else {
+		b.WriteString(styleHelp.Render("  ") + m.searchQuery + cursor + "\n")
+		b.WriteString("\n")
+	}
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Tab: switch platform  Enter: search  ESC: cancel") + "\n")
+	return b.String()
+}
+
+func (m Model) handleSearchQueryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+	if keyStr == "esc" {
+		m.view = viewDefault
+		m.searchQuery = ""
+		m.searchResults = nil
+		m.searchErr = ""
+		m.searchLoading = false
+		return m, nil
+	}
+	if keyStr == "tab" {
+		if m.searchPlatform == "youtube" {
+			m.searchPlatform = "soundcloud"
+		} else {
+			m.searchPlatform = "youtube"
+		}
+		return m, nil
+	}
+	if keyStr == "enter" {
+		query := strings.TrimSpace(m.searchQuery)
+		if query == "" {
+			return m, nil
+		}
+		m.searchLoading = true
+		m.searchErr = ""
+		limit := m.prefs.SearchResultCount
+		if limit <= 0 {
+			limit = 10
+		}
+		return m, performSearchCmd(m.searchPlatform, query, limit)
+	}
+	if keyStr == "space" {
+		m.searchQuery += " "
+		return m, nil
+	}
+	if len(keyStr) == 1 && keyStr[0] >= 32 && keyStr[0] <= 126 {
+		m.searchQuery += keyStr
+		return m, nil
+	}
+	if keyStr == "backspace" && len(m.searchQuery) > 0 {
+		m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) renderSearchResults() string {
+	var b strings.Builder
+	platform := "YouTube"
+	if m.searchPlatform == "soundcloud" {
+		platform = "SoundCloud"
+	}
+	b.WriteString(styleTitle.Render(fmt.Sprintf("  Results (%s): %q", platform, truncate(m.searchQuery, m.width-30))) + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	visibleLines := m.height - 6
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+	results := m.searchResults
+	end := m.searchOffset + visibleLines
+	if end > len(results) {
+		end = len(results)
+	}
+	start := m.searchOffset
+	if start > len(results) {
+		start = len(results)
+	}
+	for i, r := range results[start:end] {
+		realIdx := start + i
+		display := fmt.Sprintf("  %s — %s", truncate(r.Artist, (m.width-6)/2), truncate(r.Title, (m.width-6)/2))
+		if realIdx == m.searchCursor {
+			b.WriteString(styleSelected.Render(display))
+		} else {
+			b.WriteString(styleNormal.Render(display))
+		}
+		b.WriteString("\n")
+	}
+	for i := end - start; i < visibleLines; i++ {
+		b.WriteString("\n")
+	}
+
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render(fmt.Sprintf("  ↑/↓: navigate  Enter: add & play  ESC: back  (%d/%d)", m.searchCursor+1, len(results))) + "\n")
+	return b.String()
+}
+
+func (m Model) handleSearchResultsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+	if keyStr == "esc" {
+		m.view = viewSearchQuery
+		m.searchResults = nil
+		m.searchCursor = 0
+		m.searchOffset = 0
+		return m, nil
+	}
+	visibleLines := m.height - 6
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+	switch keyStr {
+	case "up", "k":
+		if m.searchCursor > 0 {
+			m.searchCursor--
+			if m.searchCursor < m.searchOffset {
+				m.searchOffset = m.searchCursor
+			}
+		}
+	case "down", "j":
+		if m.searchCursor < len(m.searchResults)-1 {
+			m.searchCursor++
+			if m.searchCursor >= m.searchOffset+visibleLines {
+				m.searchOffset = m.searchCursor - visibleLines + 1
+			}
+		}
+	case "home", "g":
+		m.searchCursor = 0
+		m.searchOffset = 0
+	case "end", "G":
+		m.searchCursor = len(m.searchResults) - 1
+		if m.searchCursor < 0 {
+			m.searchCursor = 0
+		}
+		m.searchOffset = m.searchCursor - visibleLines + 1
+		if m.searchOffset < 0 {
+			m.searchOffset = 0
+		}
+	case "enter":
+		if m.searchCursor < 0 || m.searchCursor >= len(m.searchResults) {
+			return m, nil
+		}
+		r := m.searchResults[m.searchCursor]
+		song := player.Song{
+			URL:    r.URL,
+			Title:  r.Title,
+			Author: r.Artist,
+		}
+		// Insert after current playing position.
+		insertAt := m.playing + 1
+		songs := m.p.Songs()
+		newSongs := make([]player.Song, 0, len(songs)+1)
+		newSongs = append(newSongs, songs[:insertAt]...)
+		newSongs = append(newSongs, song)
+		newSongs = append(newSongs, songs[insertAt:]...)
+		m.p.SetSongs(newSongs)
+		m.songs = m.p.Songs()
+		m.saveCurrentPlaylist()
+		if err := m.p.PlayIndex(insertAt); err != nil {
+			jlog.Errorf("ui: search result PlayIndex failed: %v", err)
+		}
+		m.playing = insertAt
+		m.prevPlaying = insertAt
+		m.view = viewDefault
+		m.searchQuery = ""
+		m.searchResults = nil
+		m.searchCursor = 0
+		m.searchOffset = 0
+		return m, tea.Batch(m.downloadIfNeeded(insertAt), m.startViz(0))
+	}
+	return m, nil
+}
+
 // renderVisualizer renders FFT visualization bars
 func (m Model) renderVisualizer() string {
 	if len(m.vizBars) == 0 {
@@ -3252,6 +3519,13 @@ func (m Model) commitSettingsInput() Model {
 		if v, err := strconv.Atoi(input); err == nil && v > 0 {
 			m.prefs.RssSkipAfterTimeValue = v
 		}
+	case 18: // Search Result Count
+		if v, err := strconv.Atoi(input); err == nil && v > 0 {
+			if v > 20 {
+				v = 20
+			}
+			m.prefs.SearchResultCount = v
+		}
 	}
 	if m.prefs.SettingsPath != "" {
 		saveSettings(m.prefs)
@@ -3289,6 +3563,7 @@ func saveSettings(p Prefs) {
 	raw["EnableQuickSearch"] = p.EnableQuickSearch
 	raw["favoriteExplainer"] = p.FavoriteExplainer
 	raw["EnableQuickPlayFromSearch"] = p.EnableQuickPlayFromSearch
+	raw["searchResultCount"] = p.SearchResultCount
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return

@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -565,3 +566,80 @@ func IsSoundCloud(url string) bool {
 func isYouTube(url string) bool         { return IsYouTube(url) }
 func isYouTubePlaylist(url string) bool { return IsYouTubePlaylist(url) }
 func isSoundCloud(url string) bool      { return IsSoundCloud(url) }
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+// SearchResult holds metadata for one search hit from yt-dlp.
+type SearchResult struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Artist string `json:"uploader"`
+	URL    string `json:"webpage_url"`
+}
+
+// Search queries YouTube or SoundCloud via yt-dlp and returns metadata hits.
+// platform should be "youtube" or "soundcloud".
+// limit caps the number of results (default 10, max 20).
+func Search(ctx context.Context, query, platform string, limit int) ([]SearchResult, error) {
+	bin, err := findYtdlp()
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 20 {
+		limit = 20
+	}
+
+	prefix := "ytsearch"
+	if platform == "soundcloud" {
+		prefix = "scsearch"
+	}
+	searchArg := fmt.Sprintf("%s%d:%s", prefix, limit, query)
+
+	cmd := exec.CommandContext(ctx, bin,
+		"--flat-playlist",
+		"--dump-json",
+		"--no-check-formats",
+		"--playlist-items", fmt.Sprintf("1:%d", limit),
+		"--no-download",
+		searchArg,
+	)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp search: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp search: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("yt-dlp search: %w", err)
+	}
+
+	var results []SearchResult
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var r SearchResult
+		if err := json.Unmarshal(line, &r); err != nil {
+			jlog.Errorf("yt-dlp search: bad json line: %v", err)
+			continue
+		}
+		results = append(results, r)
+	}
+
+	// Drain stderr so yt-dlp doesn't block.
+	go io.Copy(io.Discard, stderr)
+
+	if err := cmd.Wait(); err != nil {
+		return results, fmt.Errorf("yt-dlp search failed: %w", err)
+	}
+	return results, nil
+}

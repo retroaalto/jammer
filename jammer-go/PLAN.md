@@ -23,7 +23,7 @@
 | # | Feature | Key | Status |
 |---|---|---|---|
 | 4 | **Play Song (arbitrary path/URL)** | `Shift+P` | ✅ |
-| 5 | **Search (YouTube/SoundCloud)** | `Ctrl+Y` | ⬜ needs downloader search API |
+| 5 | **Search (YouTube/SoundCloud)** | `Ctrl+Y` | ✅ Tab toggles platform; configurable result count |
 | 6 | **Search by author** | `Shift+F3` | ✅ |
 | 7 | **Save current playlist** | `Shift+S` | ✅ |
 | 8 | **Save as new playlist** | `Shift+Alt+S` | ✅ |
@@ -90,7 +90,7 @@
 
 ```
 Phase 1 (1-3)    ✅ done
-Phase 2 (#4-13)  ✅ done (except #5 Ctrl+Y search)
+Phase 2 (#4-13)  ✅ done
 Phase 4 (#19-27) → all in main.go, fast to batch
 Phase 6 (#32-36) → self-contained playback fixes
 Phase 3 (#14-18) → each needs a new view, larger effort

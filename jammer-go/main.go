@@ -38,6 +38,7 @@ type settings struct {
 	EnableQuickSearch         bool    `json:"EnableQuickSearch"`
 	FavoriteExplainer         bool    `json:"favoriteExplainer"`
 	EnableQuickPlayFromSearch bool    `json:"EnableQuickPlayFromSearch"`
+	SearchResultCount         int     `json:"searchResultCount"`
 	ShowTitle                 bool    `json:"showTitle"`
 	TitleText                 string  `json:"titleText"`
 	TitleAnimationSpeed       int     `json:"titleAnimationSpeed"`
@@ -206,6 +207,7 @@ func main() {
 		EnableQuickSearch:         cfg.EnableQuickSearch,
 		FavoriteExplainer:         cfg.FavoriteExplainer,
 		EnableQuickPlayFromSearch: cfg.EnableQuickPlayFromSearch,
+		SearchResultCount:         cfg.SearchResultCount,
 		ShowTitle:                 cfg.ShowTitle,
 		TitleText:                 cfg.TitleText,
 		TitleAnimationSpeed:       cfg.TitleAnimationSpeed,
