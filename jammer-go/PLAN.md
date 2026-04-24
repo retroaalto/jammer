@@ -51,15 +51,15 @@
 
 | # | Flag | Status |
 |---|---|---|
-| 19 | `jammer -c <name>` create playlist | ⬜ |
-| 20 | `jammer -d <name>` delete playlist | ⬜ |
-| 21 | `jammer -a <name> <songs...>` add songs | ⬜ |
-| 22 | `jammer -r <name> <song>` remove song | ⬜ |
-| 23 | `jammer -s <name>` show playlist | ⬜ |
-| 24 | `jammer -l` list playlists | ⬜ |
-| 25 | `jammer -f / --flush` flush songs dir | ⬜ |
-| 26 | `jammer -hm / --home` play songs folder | ⬜ |
-| 27 | `jammer -v / --version` | ⬜ |
+| 19 | `jammer -c <name>` create playlist | ✅ |
+| 20 | `jammer -d <name>` delete playlist | ✅ |
+| 21 | `jammer -a <name> <songs...>` add songs | ✅ |
+| 22 | `jammer -r <name> <song>` remove song | ✅ |
+| 23 | `jammer -s <name>` show playlist | ✅ |
+| 24 | `jammer -l` list playlists | ✅ |
+| 25 | `jammer -f / --flush` flush songs dir | ✅ |
+| 26 | `jammer -hm / --home` play songs folder | ✅ |
+| 27 | `jammer -v / --version` | ✅ |
 
 ---
 

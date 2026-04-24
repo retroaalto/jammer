@@ -13,8 +13,11 @@ import (
 	"github.com/jooapa/jammer/jammer-go/internal/keybinds"
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
+	"github.com/jooapa/jammer/jammer-go/internal/playlist"
 	"github.com/jooapa/jammer/jammer-go/internal/ui"
 )
+
+const version = "0.1.0"
 
 // settings mirrors the fields of settings.json that main.go cares about.
 // Unknown fields are preserved via the raw map when saving.
@@ -97,10 +100,165 @@ func main() {
 	settingsPath := filepath.Join(jammerDir(""), "settings.json")
 	cfg := loadSettings(settingsPath)
 
-	// Parse flags: -p <playlist>  -b (use BASS backend)
+	// ── CLI-only commands (no TUI, exit after running) ──────────────────────
+	args := os.Args[1:]
+	plsDir0 := jammerDir("playlists")
+	songsDir0 := jammerDir("songs")
+	for _, d := range []string{plsDir0, songsDir0} {
+		_ = os.MkdirAll(d, 0755)
+	}
+
+	if len(args) > 0 {
+		switch args[0] {
+		case "-v", "--version":
+			fmt.Println("jammer-go", version)
+			os.Exit(0)
+
+		case "-l":
+			// List all playlists.
+			names, err := playlist.List(plsDir0)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error listing playlists:", err)
+				os.Exit(1)
+			}
+			for _, n := range names {
+				fmt.Println(n)
+			}
+			os.Exit(0)
+
+		case "-c":
+			// Create an empty playlist.
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: jammer -c <name>")
+				os.Exit(1)
+			}
+			name := args[1]
+			path := playlistPath(plsDir0, name)
+			if _, err := os.Stat(path); err == nil {
+				fmt.Fprintf(os.Stderr, "playlist %q already exists\n", name)
+				os.Exit(1)
+			}
+			if err := playlist.Save(path, nil); err != nil {
+				fmt.Fprintln(os.Stderr, "error creating playlist:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("created playlist %q\n", name)
+			os.Exit(0)
+
+		case "-d":
+			// Delete a playlist.
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: jammer -d <name>")
+				os.Exit(1)
+			}
+			resolved := resolvePlaylist(plsDir0, args[1])
+			if resolved == "" {
+				fmt.Fprintf(os.Stderr, "playlist %q not found\n", args[1])
+				os.Exit(1)
+			}
+			if err := os.Remove(filepath.Join(plsDir0, resolved)); err != nil {
+				fmt.Fprintln(os.Stderr, "error deleting playlist:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("deleted playlist %q\n", resolved)
+			os.Exit(0)
+
+		case "-a":
+			// Add songs to a playlist.
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: jammer -a <name> <song> [song...]")
+				os.Exit(1)
+			}
+			resolved := resolvePlaylist(plsDir0, args[1])
+			if resolved == "" {
+				fmt.Fprintf(os.Stderr, "playlist %q not found\n", args[1])
+				os.Exit(1)
+			}
+			path := filepath.Join(plsDir0, resolved)
+			entries, _, err := playlist.Load(path, songsDir0)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error loading playlist:", err)
+				os.Exit(1)
+			}
+			for _, song := range args[2:] {
+				entries = append(entries, playlist.Entry{URL: song})
+			}
+			if err := playlist.Save(path, entries); err != nil {
+				fmt.Fprintln(os.Stderr, "error saving playlist:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("added %d song(s) to %q\n", len(args)-2, resolved)
+			os.Exit(0)
+
+		case "-r":
+			// Remove a song from a playlist.
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: jammer -r <name> <song>")
+				os.Exit(1)
+			}
+			resolved := resolvePlaylist(plsDir0, args[1])
+			if resolved == "" {
+				fmt.Fprintf(os.Stderr, "playlist %q not found\n", args[1])
+				os.Exit(1)
+			}
+			path := filepath.Join(plsDir0, resolved)
+			entries, _, err := playlist.Load(path, songsDir0)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error loading playlist:", err)
+				os.Exit(1)
+			}
+			target := args[2]
+			newEntries := entries[:0]
+			removed := 0
+			for _, e := range entries {
+				if e.URL == target || e.Path == target || e.Title == target {
+					removed++
+				} else {
+					newEntries = append(newEntries, e)
+				}
+			}
+			if removed == 0 {
+				fmt.Fprintf(os.Stderr, "song %q not found in playlist\n", target)
+				os.Exit(1)
+			}
+			if err := playlist.Save(path, newEntries); err != nil {
+				fmt.Fprintln(os.Stderr, "error saving playlist:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("removed %d song(s) from %q\n", removed, resolved)
+			os.Exit(0)
+
+		case "-s":
+			// Show songs in a playlist.
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: jammer -s <name>")
+				os.Exit(1)
+			}
+			resolved := resolvePlaylist(plsDir0, args[1])
+			if resolved == "" {
+				fmt.Fprintf(os.Stderr, "playlist %q not found\n", args[1])
+				os.Exit(1)
+			}
+			entries, _, err := playlist.Load(filepath.Join(plsDir0, resolved), songsDir0)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error loading playlist:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("playlist: %s (%d songs)\n", resolved, len(entries))
+			for i, e := range entries {
+				fmt.Printf("  %d. %s\n", i+1, e.DisplayTitle())
+			}
+			os.Exit(0)
+
+		case "-f", "--flush":
+			fmt.Fprintln(os.Stderr, "warning: -f/--flush is deprecated and has no effect")
+			os.Exit(0)
+		}
+	}
+
+	// Parse flags: -p <playlist>  -b (use BASS backend)  -hm/--home (songs folder)
 	playlistFlag := ""
 	bassFlag := false
-	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-p":
@@ -110,6 +268,9 @@ func main() {
 			}
 		case "-b":
 			bassFlag = true
+		case "-hm", "--home":
+			// Explicitly play songs folder (default behaviour).
+			playlistFlag = ""
 		}
 	}
 
@@ -297,4 +458,13 @@ func jammerDir(sub string) string {
 		return filepath.Join(home, "jammer")
 	}
 	return filepath.Join(home, "jammer", sub)
+}
+
+// playlistPath returns the full path for a new playlist with the given name,
+// appending ".jammer" if no extension is present.
+func playlistPath(plsDir, name string) string {
+	if filepath.Ext(name) == "" {
+		name += ".jammer"
+	}
+	return filepath.Join(plsDir, name)
 }
