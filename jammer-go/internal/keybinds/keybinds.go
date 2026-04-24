@@ -2,6 +2,7 @@ package keybinds
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -235,6 +236,12 @@ func (kb *Keybinds) Get(action string) (string, bool) {
 	return spec, exists
 }
 
+// Set updates the binding for an action and rebuilds the reverse map.
+func (kb *Keybinds) Set(action, keyStr string) {
+	kb.bindings[action] = normalizeKey(keyStr)
+	kb.buildReverse()
+}
+
 // GetAll returns all bindings (useful for help screen)
 func (kb *Keybinds) GetAll() map[string]string {
 	result := make(map[string]string)
@@ -242,6 +249,31 @@ func (kb *Keybinds) GetAll() map[string]string {
 		result[k] = v
 	}
 	return result
+}
+
+// Save writes the current bindings back to ~/jammer/KeyData.ini.
+func (kb *Keybinds) Save() error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	jammerDir := filepath.Join(homeDir, "jammer")
+	if err := os.MkdirAll(jammerDir, 0o755); err != nil {
+		return err
+	}
+	filePath := filepath.Join(jammerDir, "KeyData.ini")
+	f, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	_, _ = w.WriteString("[Keybinds]\n")
+	for action, keyStr := range kb.bindings {
+		display := GetDisplay(keyStr)
+		_, _ = w.WriteString(fmt.Sprintf("%s = %s\n", action, display))
+	}
+	return w.Flush()
 }
 
 // GetDisplay returns a displayable key string for help screens

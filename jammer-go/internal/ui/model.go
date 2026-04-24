@@ -68,6 +68,7 @@ const (
 	viewShowSongs                     // read-only song list from another playlist (Phase 2 #11)
 	viewSearchQuery                   // online search query input (Phase 2 #5)
 	viewSearchResults                 // online search results list (Phase 2 #5)
+	viewEditKeybinds                  // edit keybindings view (Phase 3 #14)
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -260,6 +261,14 @@ type Model struct {
 	searchOffset   int
 	searchLoading  bool
 	searchErr      string
+
+	// Phase 3: edit keybindings
+	kbEditCursor   int
+	kbEditOffset   int
+	kbEditInput    bool   // true when capturing a new key for the selected action
+	kbEditAction   string // action currently being edited
+	kbEditCaptured string // detected key name (shown for confirmation)
+	kbEditKeys     []string // sorted list of action names for the editor
 
 	// Phase 2: status flash message (shown in progress bar area briefly)
 	statusMsg     string
@@ -664,6 +673,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.view == viewSearchResults {
 		return m.handleSearchResultsKey(msg)
+	}
+	if m.view == viewEditKeybinds {
+		return m.handleEditKeybindsKey(msg)
 	}
 
 	// Quit
@@ -1080,6 +1092,39 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.kb.Is("BackEndChange", keyStr) {
 		m.setStatus("Backend change requires restart — edit settings.json")
 		jlog.Info("ui: backend change requested (requires restart)")
+		return m, nil
+	}
+
+	// #14 Edit Keybindings (Shift+E)
+	if m.kb.Is("EditKeybindings", keyStr) {
+		m.kbEditCursor = 0
+		m.kbEditOffset = 0
+		m.kbEditInput = false
+		m.kbEditAction = ""
+		m.kbEditKeys = nil
+		for k := range m.kb.GetAll() {
+			m.kbEditKeys = append(m.kbEditKeys, k)
+		}
+		sort.Strings(m.kbEditKeys)
+		m.view = viewEditKeybinds
+		return m, nil
+	}
+
+	// Stubs for other Phase 3 features
+	if m.kb.Is("ChangeLanguage", keyStr) {
+		m.setStatus("Change language: not yet implemented")
+		return m, nil
+	}
+	if m.kb.Is("ChangeTheme", keyStr) {
+		m.setStatus("Change theme: not yet implemented")
+		return m, nil
+	}
+	if m.kb.Is("GroupMenu", keyStr) {
+		m.setStatus("Group menu: not yet implemented")
+		return m, nil
+	}
+	if m.kb.Is("ExitRssFeed", keyStr) {
+		m.setStatus("RSS feed: not yet implemented")
 		return m, nil
 	}
 
@@ -1595,6 +1640,8 @@ func (m Model) View() tea.View {
 		b.WriteString(m.renderSearchQuery())
 	case viewSearchResults:
 		b.WriteString(m.renderSearchResults())
+	case viewEditKeybinds:
+		b.WriteString(m.renderEditKeybinds())
 	case viewPlaylists:
 		// Playlists view: show song path in outer box header
 		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderPlaylists()))
@@ -3218,6 +3265,162 @@ func (m Model) handleSearchResultsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.searchCursor = 0
 		m.searchOffset = 0
 		return m, tea.Batch(m.downloadIfNeeded(insertAt), m.startViz(0))
+	}
+	return m, nil
+}
+
+// ── Phase 3: Edit Keybindings (#14) ───────────────────────────────────────────
+
+func (m Model) renderEditKeybinds() string {
+	var b strings.Builder
+	if m.kbEditInput {
+		b.WriteString(styleTitle.Render("  Edit Keybinding") + "\n")
+		b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  Action: %s", m.kbEditAction)) + "\n")
+		if m.kbEditCaptured != "" {
+			b.WriteString(styleHelp.Render(fmt.Sprintf("  Detected: %s", keybinds.GetDisplay(m.kbEditCaptured))) + "\n")
+			b.WriteString(styleHelp.Render("  Press Enter to confirm or ESC to cancel") + "\n")
+		} else {
+			b.WriteString(styleHelp.Render("  Press the new key combination...") + "\n")
+			b.WriteString(styleHelp.Render("  (type the key name + Enter if direct capture fails)") + "\n")
+		}
+		b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+		b.WriteString(styleHelp.Render("  ESC: cancel") + "\n")
+		return b.String()
+	}
+
+	b.WriteString(styleTitle.Render("  Edit Keybindings") + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	visibleLines := m.height - 6
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+	keys := m.kbEditKeys
+	end := m.kbEditOffset + visibleLines
+	if end > len(keys) {
+		end = len(keys)
+	}
+	start := m.kbEditOffset
+	if start > len(keys) {
+		start = len(keys)
+	}
+	for i, action := range keys[start:end] {
+		realIdx := start + i
+		keyStr, _ := m.kb.Get(action)
+		displayKey := keybinds.GetDisplay(keyStr)
+		line := fmt.Sprintf("  %-28s %s", action, displayKey)
+		if realIdx == m.kbEditCursor {
+			b.WriteString(styleSelected.Render(truncate(line, m.width-2)))
+		} else {
+			b.WriteString(styleNormal.Render(truncate(line, m.width-2)))
+		}
+		b.WriteString("\n")
+	}
+	for i := end - start; i < visibleLines; i++ {
+		b.WriteString("\n")
+	}
+
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render(fmt.Sprintf("  ↑/↓: navigate  Enter: edit  ESC: close  (%d/%d)", m.kbEditCursor+1, len(keys))) + "\n")
+	return b.String()
+}
+
+func (m Model) handleEditKeybindsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+
+	if m.kbEditInput {
+		jlog.Infof("kb capture: raw=%q action=%s captured=%q", keyStr, m.kbEditAction, m.kbEditCaptured)
+		if keyStr == "esc" {
+			m.kbEditInput = false
+			m.kbEditAction = ""
+			m.kbEditCaptured = ""
+			return m, nil
+		}
+		// Ignore modifier-only keys
+		if keyStr == "ctrl" || keyStr == "alt" || keyStr == "shift" {
+			return m, nil
+		}
+		// Enter confirms the currently captured/typed key.
+		if keyStr == "enter" {
+			if m.kbEditCaptured == "" {
+				return m, nil
+			}
+			m.kb.Set(m.kbEditAction, m.kbEditCaptured)
+			if err := m.kb.Save(); err != nil {
+				jlog.Errorf("save keybindings failed: %v", err)
+				m.setStatus(fmt.Sprintf("Save failed: %v", err))
+			} else {
+				m.setStatus(fmt.Sprintf("%s → %s", m.kbEditAction, keybinds.GetDisplay(m.kbEditCaptured)))
+				jlog.Infof("keybinding updated: %s = %s", m.kbEditAction, m.kbEditCaptured)
+			}
+			m.kbEditInput = false
+			m.kbEditAction = ""
+			m.kbEditCaptured = ""
+			return m, nil
+		}
+		// Backspace deletes last accumulated character.
+		if keyStr == "backspace" && m.kbEditCaptured != "" {
+			m.kbEditCaptured = m.kbEditCaptured[:len(m.kbEditCaptured)-1]
+			return m, nil
+		}
+		// Single printable characters are accumulated so the user can type a key
+		// name (e.g. "f12", "ctrl+y") when direct capture fails.
+		isSinglePrintable := len(keyStr) == 1 && keyStr[0] >= 32 && keyStr[0] <= 126
+		if isSinglePrintable {
+			m.kbEditCaptured += keyStr
+			return m, nil
+		}
+		// Everything else (special keys like f12, ctrl+y, space, etc.) is
+		// captured immediately, overwriting any typed text.
+		m.kbEditCaptured = keyStr
+		return m, nil
+	}
+
+	if keyStr == "esc" {
+		m.view = viewDefault
+		m.kbEditKeys = nil
+		m.kbEditCursor = 0
+		m.kbEditOffset = 0
+		return m, nil
+	}
+
+	visibleLines := m.height - 6
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+	switch keyStr {
+	case "up", "k":
+		if m.kbEditCursor > 0 {
+			m.kbEditCursor--
+			if m.kbEditCursor < m.kbEditOffset {
+				m.kbEditOffset = m.kbEditCursor
+			}
+		}
+	case "down", "j":
+		if m.kbEditCursor < len(m.kbEditKeys)-1 {
+			m.kbEditCursor++
+			if m.kbEditCursor >= m.kbEditOffset+visibleLines {
+				m.kbEditOffset = m.kbEditCursor - visibleLines + 1
+			}
+		}
+	case "home", "g":
+		m.kbEditCursor = 0
+		m.kbEditOffset = 0
+	case "end", "G":
+		m.kbEditCursor = len(m.kbEditKeys) - 1
+		if m.kbEditCursor < 0 {
+			m.kbEditCursor = 0
+		}
+		m.kbEditOffset = m.kbEditCursor - visibleLines + 1
+		if m.kbEditOffset < 0 {
+			m.kbEditOffset = 0
+		}
+	case "enter":
+		if m.kbEditCursor >= 0 && m.kbEditCursor < len(m.kbEditKeys) {
+			m.kbEditAction = m.kbEditKeys[m.kbEditCursor]
+			m.kbEditInput = true
+		}
 	}
 	return m, nil
 }

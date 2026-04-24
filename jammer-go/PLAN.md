@@ -39,11 +39,11 @@
 
 | # | Feature | Key | Status |
 |---|---|---|---|
-| 14 | **Edit Keybindings view** | `Shift+E` | ⬜ |
-| 15 | **Change Language view** | `Shift+L` | ⬜ |
-| 16 | **Change Theme view** | `Shift+T` | ⬜ |
-| 17 | **Group menu** | `Ctrl+G` | ⬜ |
-| 18 | **RSS Feed support** | `E` (exit) | ⬜ |
+| 14 | **Edit Keybindings view** | `Shift+E` | ✅ scrollable list, Enter to capture new key, auto-saves |
+| 15 | **Change Language view** | `Shift+L` | ⬜ stub (no i18n system yet) |
+| 16 | **Change Theme view** | `Shift+T` | ⬜ stub (no theme system yet) |
+| 17 | **Group menu** | `Ctrl+G` | ⬜ stub |
+| 18 | **RSS Feed support** | `E` (exit) | ⬜ stub |
 
 ---
 
