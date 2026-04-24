@@ -157,4 +157,4 @@ nsis/*.ico
 
 .vs/
 
-jammer-go
+jammer-go/jammer-go
