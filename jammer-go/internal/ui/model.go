@@ -47,15 +47,15 @@ type downloadDoneMsg struct {
 type viewKind int
 
 const (
-	viewDefault        viewKind = iota // 3-song snippet (prev/current/next)
-	viewAll                            // full scrollable list
-	viewPlaylists                      // playlist browser
-	viewHelp                           // help screen (Phase 5)
-	viewSettings                       // settings screen (Phase 6)
-	viewSettingsInput                  // text input for a settings value (Phase 6)
-	viewRename                         // rename song input (Phase 7)
-	viewInfo                           // song info overlay (Phase 7)
-	viewAddSong                        // add song input (Phase 7)
+	viewDefault       viewKind = iota // 3-song snippet (prev/current/next)
+	viewAll                           // full scrollable list
+	viewPlaylists                     // playlist browser
+	viewHelp                          // help screen (Phase 5)
+	viewSettings                      // settings screen (Phase 6)
+	viewSettingsInput                 // text input for a settings value (Phase 6)
+	viewRename                        // rename song input (Phase 7)
+	viewInfo                          // song info overlay (Phase 7)
+	viewAddSong                       // add song input (Phase 7)
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -211,6 +211,7 @@ type Model struct {
 
 	// Phase 7: modal inputs
 	modalInput          string // current text in modal dialogs (rename, add song, etc.)
+	modalCursor         int    // rune cursor position within modalInput
 	modalIdx            int    // index for rename/info view (which song)
 	settingsInputIdx    int    // which settings item is being edited (0-indexed)
 	settingsInputPrompt string // prompt label shown above the input
@@ -543,14 +544,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// ToMainMenu (Escape) - only if not in a modal
+	// ToMainMenu (Escape) - always returns to viewDefault from any non-modal view
 	if m.kb.Is("ToMainMenu", keyStr) {
-		if m.view == viewDefault || m.view == viewAll {
-			// If not in songs view, return to default view
-			if m.view != viewDefault {
-				m.view = viewDefault
-			}
-		}
+		m.view = viewDefault
 		return m, nil
 	}
 
@@ -666,7 +662,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Seek forward
-	if m.kb.Is("Forward5s", keyStr) || keyStr == "right" || keyStr == "l" {
+	if m.kb.Is("Forward5s", keyStr) || keyStr == "right" {
 		fwd := m.prefs.ForwardSeconds
 		if fwd <= 0 {
 			fwd = m.seekStep
@@ -717,7 +713,12 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Mute
 	if m.kb.Is("Mute", keyStr) {
-		// TODO: implement mute in player if not already there
+		m.p.Mute()
+		if m.p.IsMuted() {
+			jlog.Info("ui: muted")
+		} else {
+			jlog.Infof("ui: unmuted → %.0f%%", float64(m.p.Volume())*100)
+		}
 		return m, nil
 	}
 
@@ -832,12 +833,25 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Toggle info
 	if m.kb.Is("ToggleInfo", keyStr) || m.kb.Is("CurrentState", keyStr) {
+		m.modalIdx = m.playing
 		m.view = viewInfo
 		return m, nil
 	}
 
 	// Rename song
 	if m.kb.Is("RenameSong", keyStr) {
+		m.modalIdx = m.playing
+		if m.modalIdx >= 0 && m.modalIdx < len(m.songs) {
+			s := m.songs[m.modalIdx]
+			if s.Author != "" {
+				m.modalInput = s.Author + " - " + s.Title
+			} else {
+				m.modalInput = s.Title
+			}
+		} else {
+			m.modalInput = ""
+		}
+		m.modalCursor = len([]rune(m.modalInput))
 		m.view = viewRename
 		return m, nil
 	}
@@ -1216,7 +1230,7 @@ func (m Model) View() tea.View {
 	case viewSettingsInput:
 		b.WriteString(m.renderSettingsInput())
 	case viewRename:
-		b.WriteString(m.renderRename())
+		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderSongsDefault()))
 	case viewInfo:
 		b.WriteString(m.renderInfo())
 	case viewAddSong:
@@ -1326,7 +1340,7 @@ func dlSuffix(m Model, idx int) string {
 // formatSongLine formats a song line with the author right-aligned.
 // boxW is the usable width inside the inner box (after border+padding overhead).
 func formatSongLine(label, title, author string, boxW int) string {
-	labelPart := fmt.Sprintf("%-8s : ", label) // "previous : " = 11 chars
+	labelPart := fmt.Sprintf("%-11s : ", label) // "Now playing : " = 14 chars
 	// Available chars for title: boxW - labelPart - author - 1 (space before author)
 	titleMax := boxW - len([]rune(labelPart))
 	if author != "" {
@@ -1383,7 +1397,7 @@ func (m Model) renderSongsDefault() string {
 		}
 
 		// playlist header + separator
-		header := styleHelp.Render("playlist ") + styleTitle.Render(plsName)
+		header := styleTitle.Render(plsName)
 		sep := strings.Repeat("─", textW)
 
 		prevSong := m.songs[prevIdx]
@@ -1398,9 +1412,45 @@ func (m Model) renderSongsDefault() string {
 		currSfxW := lipgloss.Width(currSfx)
 		nextSfxW := lipgloss.Width(nextSfx)
 
-		prevLine := styleHelp.Render(formatSongLine("previous", prevSong.DisplayTitle(), prevSong.Author, textW-prevSfxW)) + prevSfx
-		currLine := stylePlaying.Render(formatSongLine("current", currSong.DisplayTitle(), currSong.Author, textW-currSfxW)) + currSfx
-		nextLine := styleHelp.Render(formatSongLine("next", nextSong.DisplayTitle(), nextSong.Author, textW-nextSfxW)) + nextSfx
+		prevLine := styleHelp.Render(formatSongLine("Previous", prevSong.DisplayTitle(), prevSong.Author, textW-prevSfxW)) + prevSfx
+		var currLine string
+		if m.view == viewRename {
+			// Inline rename: show input field on current line, no author on right
+			cursor := styleBarFill.Render("█")
+			label := "Now playing : "
+			inputW := textW - len([]rune(label))
+			if inputW < 4 {
+				inputW = 4
+			}
+			runes := []rune(m.modalInput)
+			cur := m.modalCursor
+			if cur > len(runes) {
+				cur = len(runes)
+			}
+			// Scroll the visible window so the cursor is always in view.
+			// Reserve 1 column for the cursor block itself.
+			visW := inputW - 1
+			if visW < 1 {
+				visW = 1
+			}
+			start := 0
+			if cur >= visW {
+				start = cur - visW + 1
+			}
+			end := start + visW
+			if end > len(runes) {
+				end = len(runes)
+			}
+			before := string(runes[start:cur])
+			after := ""
+			if cur < end {
+				after = string(runes[cur:end])
+			}
+			currLine = stylePlaying.Render(label+before) + cursor + stylePlaying.Render(after)
+		} else {
+			currLine = stylePlaying.Render(formatSongLine("Now playing", currSong.DisplayTitle(), currSong.Author, textW-currSfxW)) + currSfx
+		}
+		nextLine := styleHelp.Render(formatSongLine("Next", nextSong.DisplayTitle(), nextSong.Author, textW-nextSfxW)) + nextSfx
 
 		boxContent := header + "\n" + sep + "\n" +
 			prevLine + "\n" +
@@ -1466,7 +1516,7 @@ func (m Model) renderSongsAll() string {
 	chooseKey, _ := m.kb.Get("Choose")
 	deleteKey, _ := m.kb.Get("DeleteCurrentSong")
 
-	header := styleHelp.Render("playlist ") + styleTitle.Render(plsName)
+	header := styleTitle.Render(plsName)
 	sep := strings.Repeat("─", textW)
 	instr1 := styleHelp.Render(fmt.Sprintf("Move with %s, %s", scrollUpKey, scrollDownKey))
 	instr2 := styleHelp.Render(fmt.Sprintf("Play with %s. Delete with %s.", chooseKey, deleteKey))
@@ -2032,32 +2082,92 @@ func (m Model) applySettingAction(idx int) Model {
 // handleRenameKey handles key input on the rename dialog
 func (m Model) handleRenameKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
+	runes := []rune(m.modalInput)
+	cur := m.modalCursor
 
 	if keyStr == "esc" {
 		m.view = viewDefault
 		m.modalInput = ""
+		m.modalCursor = 0
 		m.modalIdx = -1
 		return m, nil
 	}
 
 	if keyStr == "enter" {
-		// TODO: Actually rename the song
-		// For now, just close the dialog
+		input := strings.TrimSpace(m.modalInput)
+		if input != "" && m.modalIdx >= 0 && m.modalIdx < len(m.songs) {
+			// Parse "Author - Title" or plain title.
+			title := input
+			author := ""
+			if idx := strings.Index(input, " - "); idx > 0 {
+				author = strings.TrimSpace(input[:idx])
+				title = strings.TrimSpace(input[idx+3:])
+			}
+			// Write tags to disk if the file exists.
+			if path := m.songs[m.modalIdx].Path; path != "" {
+				if err := tags.Write(path, title, author); err != nil {
+					jlog.Errorf("ui: rename tags.Write failed: %v", err)
+				}
+			}
+			// Update in-memory player state.
+			m.p.UpdateSongTags(m.modalIdx, title, author)
+			// Refresh local snapshot.
+			m.songs = m.p.Songs()
+			// Persist to playlist file.
+			m.saveCurrentPlaylist()
+			jlog.Infof("ui: renamed song index=%d to %q / %q", m.modalIdx, title, author)
+		}
+		// Empty input = cancelled (keep original name)
 		m.view = viewDefault
 		m.modalInput = ""
+		m.modalCursor = 0
 		m.modalIdx = -1
 		return m, nil
 	}
 
-	// Character input
-	if len(keyStr) == 1 && (keyStr[0] >= 32 && keyStr[0] <= 126) {
-		m.modalInput += keyStr
+	// Cursor movement
+	switch keyStr {
+	case "left":
+		if cur > 0 {
+			m.modalCursor--
+		}
+		return m, nil
+	case "right":
+		if cur < len(runes) {
+			m.modalCursor++
+		}
+		return m, nil
+	case "home", "ctrl+a":
+		m.modalCursor = 0
+		return m, nil
+	case "end", "ctrl+e":
+		m.modalCursor = len(runes)
 		return m, nil
 	}
 
-	// Backspace
-	if keyStr == "backspace" && len(m.modalInput) > 0 {
-		m.modalInput = m.modalInput[:len(m.modalInput)-1]
+	// Backspace: delete rune before cursor
+	if keyStr == "backspace" && cur > 0 {
+		m.modalInput = string(runes[:cur-1]) + string(runes[cur:])
+		m.modalCursor--
+		return m, nil
+	}
+
+	// Delete: delete rune at cursor
+	if keyStr == "delete" && cur < len(runes) {
+		m.modalInput = string(runes[:cur]) + string(runes[cur+1:])
+		return m, nil
+	}
+
+	// Character input: insert at cursor
+	ch := ""
+	if keyStr == "space" {
+		ch = " "
+	} else if len(keyStr) == 1 && keyStr[0] >= 32 && keyStr[0] <= 126 {
+		ch = keyStr
+	}
+	if ch != "" {
+		m.modalInput = string(runes[:cur]) + ch + string(runes[cur:])
+		m.modalCursor++
 		return m, nil
 	}
 
@@ -2088,14 +2198,37 @@ func (m Model) handleAddSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if keyStr == "enter" {
-		// TODO: Actually add the song to the playlist
-		// For now, just close the dialog
+		input := strings.TrimSpace(m.modalInput)
+		if input != "" {
+			song := player.Song{}
+			// Determine whether it's a URL or a local path.
+			if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+				song.URL = input
+			} else {
+				// Treat as local file path.
+				song.Path = input
+				if info, err := tags.Read(input); err == nil && info.Title != "" {
+					song.Title = info.Title
+					song.Author = info.Artist
+				} else {
+					song.Title = strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))
+				}
+			}
+			m.p.AddSong(song)
+			m.songs = m.p.Songs()
+			m.saveCurrentPlaylist()
+			jlog.Infof("ui: added song %q to queue (total=%d)", input, len(m.songs))
+		}
 		m.view = viewDefault
 		m.modalInput = ""
 		return m, nil
 	}
 
 	// Character input - allow URLs and paths
+	if keyStr == "space" {
+		m.modalInput += " "
+		return m, nil
+	}
 	if len(keyStr) == 1 && (keyStr[0] >= 32 && keyStr[0] <= 126) {
 		m.modalInput += keyStr
 		return m, nil
@@ -2112,50 +2245,27 @@ func (m Model) handleAddSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // ── Phase 7: Modal Views ──────────────────────────────────────────────────────
 
-// renderRename renders the rename song dialog
-func (m Model) renderRename() string {
-	var b strings.Builder
-
-	b.WriteString(styleTitle.Render("  Rename Song\n"))
-	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-
-	if m.modalIdx >= 0 && m.modalIdx < len(m.songs) {
-		currentName := m.songs[m.modalIdx].DisplayTitle()
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  Current: %s\n\n", currentName)))
-	}
-
-	// Input line
-	cursor := styleBarFill.Render("█")
-	b.WriteString(styleHelp.Render("  New name: ") + m.modalInput + cursor + "\n")
-
-	b.WriteString("\n")
-	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter: confirm  ESC: cancel\n"))
-
-	return b.String()
-}
-
 // renderInfo renders the song information overlay
 func (m Model) renderInfo() string {
 	var b strings.Builder
 
-	b.WriteString(styleTitle.Render("  Song Information\n"))
+	b.WriteString(styleTitle.Render("  Song Information") + "\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
 
 	if m.modalIdx >= 0 && m.modalIdx < len(m.songs) {
 		song := m.songs[m.modalIdx]
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  Title:    %s\n", song.DisplayTitle())))
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  Author:   %s\n", song.Author)))
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  URL:      %s\n", song.URL)))
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  File:     %s\n", filepath.Base(song.Path))))
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  Downloaded: %v\n", song.Downloaded())))
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  Title:    %s", song.DisplayTitle())) + "\n")
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  Author:   %s", song.Author)) + "\n")
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  URL:      %s", song.URL)) + "\n")
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  File:     %s", filepath.Base(song.Path))) + "\n")
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  Downloaded: %v", song.Downloaded())) + "\n")
 	} else {
-		b.WriteString(styleHelp.Render("  No song selected\n"))
+		b.WriteString(styleHelp.Render("  No song selected") + "\n")
 	}
 
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  ESC: close\n"))
+	b.WriteString(styleHelp.Render("  ESC: close") + "\n")
 
 	return b.String()
 }
@@ -2164,9 +2274,9 @@ func (m Model) renderInfo() string {
 func (m Model) renderAddSong() string {
 	var b strings.Builder
 
-	b.WriteString(styleTitle.Render("  Add Song\n"))
+	b.WriteString(styleTitle.Render("  Add Song") + "\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter URL or file path to add to playlist\n\n"))
+	b.WriteString(styleHelp.Render("  Enter URL or file path to add to playlist") + "\n\n")
 
 	// Input line
 	cursor := styleBarFill.Render("█")
@@ -2174,7 +2284,7 @@ func (m Model) renderAddSong() string {
 
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter: add  ESC: cancel\n"))
+	b.WriteString(styleHelp.Render("  Enter: add  ESC: cancel") + "\n")
 
 	return b.String()
 }
@@ -2267,7 +2377,12 @@ func (m Model) renderProgressBar() string {
 	bar := strings.Repeat("█", filled) + strings.Repeat(" ", barLen-filled)
 	vol := int(math.Round(float64(m.p.Volume()) * 100))
 
-	return fmt.Sprintf("%s%s%s %s |%s| %s  %3d%%", state, shuffle, loopGlyph, elapsed, bar, total, vol)
+	volStr := fmt.Sprintf("%3d%%", vol)
+	if m.p.IsMuted() {
+		volStr = "MUTE"
+	}
+
+	return fmt.Sprintf("%s%s%s %s |%s| %s  %s", state, shuffle, loopGlyph, elapsed, bar, total, volStr)
 }
 
 // ── Playlists view ────────────────────────────────────────────────────────────

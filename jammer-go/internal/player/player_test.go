@@ -136,7 +136,7 @@ func TestVolume_NormalRange(t *testing.T) {
 
 func TestDisplayTitle_TitleAndAuthor(t *testing.T) {
 	s := player.Song{Title: "Track", Author: "Artist"}
-	if s.DisplayTitle() != "Artist - Track" {
+	if s.DisplayTitle() != "Track" {
 		t.Errorf("got %q", s.DisplayTitle())
 	}
 }

@@ -31,11 +31,8 @@ type Song struct {
 // Downloaded reports whether the song has a local file ready to play.
 func (s Song) Downloaded() bool { return s.Path != "" }
 
-// DisplayTitle returns the best available title.
+// DisplayTitle returns the best available title (without author prefix).
 func (s Song) DisplayTitle() string {
-	if s.Title != "" && s.Author != "" {
-		return s.Author + " - " + s.Title
-	}
 	if s.Title != "" {
 		return s.Title
 	}
@@ -65,15 +62,17 @@ const (
 
 // Player manages audio playback and the song queue.
 type Player struct {
-	mu       sync.Mutex
-	songs    []Song
-	index    int
-	state    State
-	stream   audio.Stream
-	backend  audio.Backend
-	volume   float32
-	loopMode LoopMode
-	shuffle  bool
+	mu            sync.Mutex
+	songs         []Song
+	index         int
+	state         State
+	stream        audio.Stream
+	backend       audio.Backend
+	volume        float32
+	preMuteVolume float32
+	muted         bool
+	loopMode      LoopMode
+	shuffle       bool
 
 	OnTrackChange func(index int)
 	OnStop        func()
@@ -510,6 +509,40 @@ func (p *Player) IsShuffle() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.shuffle
+}
+
+// Mute silences playback while remembering the previous volume.
+// If already muted, it restores the previous volume (unmute).
+func (p *Player) Mute() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.muted {
+		// Unmute: restore saved volume.
+		p.muted = false
+		p.volume = p.preMuteVolume
+	} else {
+		// Mute: save current volume and silence.
+		p.preMuteVolume = p.volume
+		p.muted = true
+		p.volume = 0
+	}
+	if p.stream != nil {
+		p.stream.SetVolume(p.volume)
+	}
+}
+
+// IsMuted reports whether the player is currently muted.
+func (p *Player) IsMuted() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.muted
+}
+
+// AddSong appends a song to the end of the queue.
+func (p *Player) AddSong(s Song) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.songs = append(p.songs, s)
 }
 
 // WatchEnd polls for track end and auto-advances. Call in a goroutine.
