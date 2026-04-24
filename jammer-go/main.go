@@ -38,6 +38,10 @@ type settings struct {
 	EnableQuickSearch         bool    `json:"EnableQuickSearch"`
 	FavoriteExplainer         bool    `json:"favoriteExplainer"`
 	EnableQuickPlayFromSearch bool    `json:"EnableQuickPlayFromSearch"`
+	ShowTitle                 bool    `json:"showTitle"`
+	TitleText                 string  `json:"titleText"`
+	TitleAnimationSpeed       int     `json:"titleAnimationSpeed"`
+	TitleAnimationInterval    int     `json:"titleAnimationInterval"`
 }
 
 const defaultSeekStep = 2
@@ -202,6 +206,10 @@ func main() {
 		EnableQuickSearch:         cfg.EnableQuickSearch,
 		FavoriteExplainer:         cfg.FavoriteExplainer,
 		EnableQuickPlayFromSearch: cfg.EnableQuickPlayFromSearch,
+		ShowTitle:                 cfg.ShowTitle,
+		TitleText:                 cfg.TitleText,
+		TitleAnimationSpeed:       cfg.TitleAnimationSpeed,
+		TitleAnimationInterval:    cfg.TitleAnimationInterval,
 	}
 
 	var m ui.Model

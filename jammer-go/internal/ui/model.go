@@ -27,6 +27,7 @@ import (
 
 type tickMsg time.Time
 type vizTickMsg time.Time
+type titleTickMsg time.Time
 
 type downloadProgressMsg struct {
 	index      int
@@ -158,6 +159,10 @@ type Prefs struct {
 	EnableQuickSearch         bool
 	FavoriteExplainer         bool
 	EnableQuickPlayFromSearch bool
+	ShowTitle                 bool
+	TitleText                 string
+	TitleAnimationSpeed       int // ms per scanner step (default 80)
+	TitleAnimationInterval    int // ms pause at each end before reversing (default 1000)
 }
 
 type Model struct {
@@ -209,6 +214,13 @@ type Model struct {
 	lastError   string    // most recent download error message (empty = none)
 	lastErrTime time.Time // when lastError was set; cleared after 8 s by tickMsg
 
+	// title animation
+	titleTick       int  // kept for backwards compat, unused now
+	titleScanPos    int  // index of bright spot in title runes
+	titleScanDir    int  // +1 or -1
+	titlePauseTicks int  // remaining pause ticks at each end
+	titleRunning    bool // whether the title tick loop is active
+
 	// Phase 7: modal inputs
 	modalInput          string // current text in modal dialogs (rename, add song, etc.)
 	modalCursor         int    // rune cursor position within modalInput
@@ -232,16 +244,17 @@ func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekSte
 	}
 
 	m := Model{
-		p:        p,
-		songsDir: songsDir,
-		plsDir:   plsDir,
-		kb:       kb,
-		seekStep: seekStep,
-		prefs:    prefs,
-		songs:    p.Songs(),
-		playing:  p.Index(),
-		dlStates: make(map[int]*dlState),
-		view:     initialView,
+		p:            p,
+		songsDir:     songsDir,
+		plsDir:       plsDir,
+		kb:           kb,
+		seekStep:     seekStep,
+		prefs:        prefs,
+		songs:        p.Songs(),
+		playing:      p.Index(),
+		dlStates:     make(map[int]*dlState),
+		view:         initialView,
+		titleScanDir: 1,
 	}
 	m.reloadPlaylists()
 	if plsFile != "" {
@@ -269,8 +282,20 @@ func vizTick() tea.Cmd {
 	})
 }
 
+func titleTickCmd(speedMs int) tea.Cmd {
+	if speedMs <= 0 {
+		speedMs = 80
+	}
+	return tea.Tick(time.Duration(speedMs)*time.Millisecond, func(t time.Time) tea.Msg {
+		return titleTickMsg(t)
+	})
+}
+
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tick(), m.startViz(0)}
+	if m.prefs.ShowTitle {
+		cmds = append(cmds, titleTickCmd(m.prefs.TitleAnimationSpeed))
+	}
 	if m.autoPlay && len(m.songs) > 0 {
 		cmds = append(cmds, func() tea.Msg {
 			if err := m.p.PlayIndex(0); err != nil {
@@ -292,6 +317,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case tickMsg:
+		m.titleTick++
 		pos, dur := m.p.Progress()
 		m.pos = pos
 		m.dur = dur
@@ -392,6 +418,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Player stopped/paused — let the tick lapse; will be restarted on next play.
 		m.vizRunning = false
+
+	case titleTickMsg:
+		if m.prefs.ShowTitle {
+			titleRunes := []rune(m.titleString())
+			n := len(titleRunes)
+			if n > 0 {
+				intervalTicks := m.prefs.TitleAnimationInterval
+				if intervalTicks <= 0 {
+					intervalTicks = 1000
+				}
+				speedMs := m.prefs.TitleAnimationSpeed
+				if speedMs <= 0 {
+					speedMs = 80
+				}
+				pauseNeeded := intervalTicks / speedMs
+				if m.titlePauseTicks > 0 {
+					m.titlePauseTicks--
+				} else {
+					m.titleScanPos += m.titleScanDir
+					if m.titleScanPos >= n {
+						// Right end: reverse immediately, no pause
+						m.titleScanPos = n - 1
+						m.titleScanDir = -1
+					} else if m.titleScanPos < 0 {
+						// Left end: pause before starting next sweep
+						m.titleScanPos = 0
+						m.titleScanDir = 1
+						m.titlePauseTicks = pauseNeeded
+					}
+				}
+			}
+			return m, titleTickCmd(m.prefs.TitleAnimationSpeed)
+		}
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -1254,10 +1313,60 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// renderOuterBox wraps inner content in a rounded border box. The first line
-// of rendered output is the song path (mimicking the classic jammer mainTable
-// column header), followed by a ├──┤ separator, then the inner content.
-func (m Model) renderOuterBox(header, inner string) string {
+// jammerColors is the palette cycled through for the J a m m e r title animation.
+var jammerColors = []lipgloss.Color{"#ff79c6", "#bd93f9", "#8be9fd", "#50fa7b", "#ffb86c", "#ff5555", "#f1fa8c"}
+
+// titleString returns the effective title text (settings override or default).
+func (m Model) titleString() string {
+	if m.prefs.TitleText != "" {
+		return m.prefs.TitleText
+	}
+	return "Jammer - light-weight CLI music player"
+}
+
+// renderJammerTitle renders the title with a K.I.T.T.-style scanner:
+// one bright red spot bouncing left/right, trailing tail, rest dim.
+func (m Model) renderJammerTitle() string {
+	runes := []rune(m.titleString())
+	n := len(runes)
+	if n == 0 {
+		return ""
+	}
+
+	bright := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff4444")).Bold(true)
+	tail1 := lipgloss.NewStyle().Foreground(lipgloss.Color("#aa1111"))
+	tail2 := lipgloss.NewStyle().Foreground(lipgloss.Color("#661111"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	pos := m.titleScanPos
+	dir := m.titleScanDir
+	paused := m.titlePauseTicks > 0
+
+	var s strings.Builder
+	for i, ch := range runes {
+		c := string(ch)
+		isTail1 := (dir > 0 && i == pos-1) || (dir < 0 && i == pos+1)
+		isTail2 := (dir > 0 && i == pos-2) || (dir < 0 && i == pos+2)
+		switch {
+		case paused:
+			s.WriteString(dim.Render(c))
+		case i == pos:
+			s.WriteString(bright.Render(c))
+		case isTail1:
+			s.WriteString(tail1.Render(c))
+		case isTail2:
+			s.WriteString(tail2.Render(c))
+		default:
+			s.WriteString(dim.Render(c))
+		}
+	}
+	return s.String()
+}
+
+// renderOuterBox wraps inner content in a rounded border box.
+// When ShowTitle is true the header row shows the animated "J a m m e r" title;
+// when false the header and separator are omitted entirely.
+func (m Model) renderOuterBox(_, inner string) string {
 	w := m.width
 	if w < 4 {
 		w = 4
@@ -1266,13 +1375,6 @@ func (m Model) renderOuterBox(header, inner string) string {
 
 	// Top border: ╭───╮
 	top := "╭" + strings.Repeat("─", innerW) + "╮"
-
-	// Header line: │ path... │
-	headerText := truncate(header, innerW-2)
-	headerLine := "│ " + headerText + strings.Repeat(" ", innerW-2-lipgloss.Width(headerText)) + " │"
-
-	// Separator: ├───┤
-	sep := "├" + strings.Repeat("─", innerW) + "┤"
 
 	// Bottom border: ╰───╯
 	bottom := "╰" + strings.Repeat("─", innerW) + "╯"
@@ -1288,12 +1390,26 @@ func (m Model) renderOuterBox(header, inner string) string {
 		}
 		body.WriteString("│ " + line + strings.Repeat(" ", padding) + " │\n")
 	}
-	// Fill remaining height with empty rows
-	usedRows := 3 + len(lines) + 1 // top + header + sep + lines + bottom
+
+	headerRows := 0
+	if m.prefs.ShowTitle {
+		headerRows = 2 // header line + separator
+	}
+	usedRows := 2 + headerRows + len(lines) // top + (header+sep) + lines + bottom counted separately
 	for usedRows < m.height-1 {
 		body.WriteString("│" + strings.Repeat(" ", innerW) + "│\n")
 		usedRows++
 	}
+
+	if !m.prefs.ShowTitle {
+		return top + "\n" + body.String() + bottom + "\n"
+	}
+
+	// Header line: │ J a m m e r          │
+	title := m.renderJammerTitle()
+	titleW := lipgloss.Width(title)
+	headerLine := "│ " + title + strings.Repeat(" ", innerW-2-titleW) + " │"
+	sep := "├" + strings.Repeat("─", innerW) + "┤"
 
 	return top + "\n" + headerLine + "\n" + sep + "\n" + body.String() + bottom + "\n"
 }
