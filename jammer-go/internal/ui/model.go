@@ -51,12 +51,16 @@ const (
 	viewDefault       viewKind = iota // 3-song snippet (prev/current/next)
 	viewAll                           // full scrollable list
 	viewPlaylists                     // playlist browser
-	viewHelp                          // help screen (Phase 5)
-	viewSettings                      // settings screen (Phase 6)
-	viewSettingsInput                 // text input for a settings value (Phase 6)
-	viewRename                        // rename song input (Phase 7)
-	viewInfo                          // song info overlay (Phase 7)
-	viewAddSong                       // add song input (Phase 7)
+	viewHelp                          // help screen
+	viewSettings                      // settings screen
+	viewSettingsInput                 // text input for a settings value
+	viewRename                        // rename song input
+	viewInfo                          // song info overlay
+	viewAddSong                       // add song input
+	viewPlaySong                      // play arbitrary path/URL input (Phase 2 #4)
+	viewSaveAs                        // save playlist as new name (Phase 2 #8)
+	viewLog                           // scrollable log viewer (Phase 2 #12)
+	viewShowSongs                     // read-only song list from another playlist (Phase 2 #11)
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -196,9 +200,10 @@ type Model struct {
 	plsFile     string // absolute path of currently loaded playlist (empty = songs dir)
 
 	// filter
-	filter       string // current filter text (empty = no filter)
-	filtering    bool   // true while the user is typing a filter
-	filteredIdxs []int  // indices into songs that match the filter (nil = no filter active)
+	filter         string // current filter text (empty = no filter)
+	filterByAuthor bool   // when true, filter matches Author instead of title
+	filtering      bool   // true while the user is typing a filter
+	filteredIdxs   []int  // indices into songs that match the filter (nil = no filter active)
 
 	// visualizer
 	vizBars    []float64 // current smoothed bar heights (0.0–1.0)
@@ -221,12 +226,27 @@ type Model struct {
 	titlePauseTicks int  // remaining pause ticks at each end
 	titleRunning    bool // whether the title tick loop is active
 
-	// Phase 7: modal inputs
-	modalInput          string // current text in modal dialogs (rename, add song, etc.)
+	// modal inputs (rename, add song, play song, save as, etc.)
+	modalInput          string // current text in modal dialogs
 	modalCursor         int    // rune cursor position within modalInput
 	modalIdx            int    // index for rename/info view (which song)
 	settingsInputIdx    int    // which settings item is being edited (0-indexed)
 	settingsInputPrompt string // prompt label shown above the input
+
+	// Phase 2: log view
+	logLines  []string // lines loaded from jammer.log
+	logOffset int      // scroll offset in viewLog
+
+	// Phase 2: show songs from another playlist
+	showSongsEntries  []playlist.Entry // songs loaded for viewShowSongs
+	showSongsCursor   int
+	showSongsOffset   int
+	showSongsName     string // playlist name being shown
+	showSongsPickMode bool   // when true, playlist picker is in "show songs" mode (not load-and-play)
+
+	// Phase 2: status flash message (shown in progress bar area briefly)
+	statusMsg     string
+	statusMsgTime time.Time
 }
 
 func New(p *player.Player, songsDir, plsDir string, seekStep int, defaultView string, kb *keybinds.Keybinds, prefs Prefs) Model {
@@ -596,6 +616,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.view == viewAddSong {
 		return m.handleAddSongKey(msg)
 	}
+	if m.view == viewPlaySong {
+		return m.handlePlaySongKey(msg)
+	}
+	if m.view == viewSaveAs {
+		return m.handleSaveAsKey(msg)
+	}
+	if m.view == viewLog {
+		return m.handleLogKey(msg)
+	}
+	if m.view == viewShowSongs {
+		return m.handleShowSongsKey(msg)
+	}
 
 	// Quit
 	if m.kb.Is("Quit", keyStr) {
@@ -603,9 +635,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// ToMainMenu (Escape) - always returns to viewDefault from any non-modal view
+	// ToMainMenu (Escape) - clears filter if active; otherwise returns to viewDefault
 	if m.kb.Is("ToMainMenu", keyStr) {
+		if m.filtering || m.filter != "" {
+			// Only clear the filter; stay in the current view.
+			m.filtering = false
+			m.filter = ""
+			m.filteredIdxs = nil
+			m.filterByAuthor = false
+			m.scursor = m.playing
+			m.soffset = 0
+			m.clampSongScroll()
+			return m, nil
+		}
 		m.view = viewDefault
+		m.showSongsPickMode = false
 		return m, nil
 	}
 
@@ -921,6 +965,88 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// #7 Save current playlist (Shift+S)
+	if m.kb.Is("SaveCurrentPlaylist", keyStr) {
+		m.saveCurrentPlaylist()
+		m.setStatus("Playlist saved")
+		jlog.Info("ui: playlist saved")
+		return m, nil
+	}
+
+	// #8 Save as new playlist (Shift+Alt+S)
+	if m.kb.Is("SaveAsPlaylist", keyStr) {
+		m.modalInput = ""
+		m.modalCursor = 0
+		m.view = viewSaveAs
+		return m, nil
+	}
+
+	// #9 Shuffle playlist order (Alt+S)
+	if m.kb.Is("ShufflePlaylist", keyStr) {
+		songs := m.p.Songs()
+		rand.Shuffle(len(songs), func(i, j int) { songs[i], songs[j] = songs[j], songs[i] })
+		m.p.SetSongs(songs)
+		m.songs = m.p.Songs()
+		m.playing = m.p.Index()
+		m.saveCurrentPlaylist()
+		m.setStatus("Playlist shuffled")
+		jlog.Info("ui: playlist shuffled")
+		return m, nil
+	}
+
+	// #10 Add current song to Favorites (Ctrl+F)
+	if m.kb.Is("AddCurrentSongToFavorites", keyStr) {
+		if m.playing >= 0 && m.playing < len(m.songs) {
+			msg := m.toggleFavorite(m.playing)
+			m.setStatus(msg)
+		}
+		return m, nil
+	}
+
+	// #11 Show songs in another playlist (Shift+D)
+	if m.kb.Is("ShowSongsInPlaylists", keyStr) {
+		m.reloadPlaylists()
+		m.pcursor = 0
+		m.poffset = 0
+		m.showSongsPickMode = true
+		m.view = viewPlaylists
+		return m, nil
+	}
+
+	// #12 Show log (Ctrl+L)
+	if m.kb.Is("ShowLog", keyStr) {
+		m.loadLogLines()
+		m.logOffset = len(m.logLines) // start scrolled to bottom
+		m.view = viewLog
+		return m, nil
+	}
+
+	// #13 Backend switch (B)
+	if m.kb.Is("BackEndChange", keyStr) {
+		m.setStatus("Backend change requires restart — edit settings.json")
+		jlog.Info("ui: backend change requested (requires restart)")
+		return m, nil
+	}
+
+	// #4 Play Song modal (Shift+P)
+	if m.kb.Is("PlaySong", keyStr) {
+		m.modalInput = ""
+		m.modalCursor = 0
+		m.view = viewPlaySong
+		return m, nil
+	}
+
+	// #6 Search by author (Shift+F3)
+	if m.kb.Is("SearchByAuthor", keyStr) {
+		m.filtering = true
+		m.filterByAuthor = true
+		m.filter = ""
+		m.filteredIdxs = nil
+		m.scursor = 0
+		m.soffset = 0
+		return m, nil
+	}
+
 	return m, nil
 }
 
@@ -952,6 +1078,7 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.filtering = false
 		m.filter = ""
 		m.filteredIdxs = nil
+		m.filterByAuthor = false
 		m.scursor = m.playing
 		m.soffset = 0
 		m.clampSongScroll()
@@ -1000,11 +1127,30 @@ func (m Model) handlePlaylistKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "space", "enter":
 		if m.pcursor >= 0 && m.pcursor < len(m.playlists) {
-			jlog.Infof("ui: loading playlist %q", m.playlists[m.pcursor])
-			m.loadPlaylist(m.playlists[m.pcursor])
-			m.view = viewDefault
-			m.scursor = 0
-			m.soffset = 0
+			if m.showSongsPickMode {
+				// Load playlist into showSongsEntries for read-only display.
+				plsName := m.playlists[m.pcursor]
+				plsPath := filepath.Join(m.plsDir, plsName)
+				entries, _, err := playlist.Load(plsPath, m.songsDir)
+				if err != nil {
+					jlog.Errorf("ui: show songs load failed: %v", err)
+					m.showSongsPickMode = false
+					m.view = viewDefault
+				} else {
+					m.showSongsEntries = entries
+					m.showSongsName = strings.TrimSuffix(plsName, filepath.Ext(plsName))
+					m.showSongsCursor = 0
+					m.showSongsOffset = 0
+					m.showSongsPickMode = false
+					m.view = viewShowSongs
+				}
+			} else {
+				jlog.Infof("ui: loading playlist %q", m.playlists[m.pcursor])
+				m.loadPlaylist(m.playlists[m.pcursor])
+				m.view = viewDefault
+				m.scursor = 0
+				m.soffset = 0
+			}
 		}
 	}
 	return m, nil
@@ -1087,6 +1233,78 @@ func (m *Model) saveCurrentPlaylist() {
 	} else {
 		jlog.Infof("saveCurrentPlaylist: wrote %d entries to %q", len(entries), m.plsFile)
 	}
+}
+
+// setStatus shows a flash message in the UI for ~3 seconds.
+func (m *Model) setStatus(msg string) {
+	m.statusMsg = msg
+	m.statusMsgTime = time.Now()
+}
+
+// toggleFavorite adds or removes the song at idx from favorites.jammer.
+// Returns a status string describing what happened.
+func (m *Model) toggleFavorite(idx int) string {
+	if idx < 0 || idx >= len(m.songs) {
+		return "No song selected"
+	}
+	song := m.songs[idx]
+	favPath := filepath.Join(filepath.Dir(m.songsDir), "favorites.jammer")
+
+	// Load existing favorites (ignore missing file).
+	existing, _, _ := playlist.Load(favPath, m.songsDir)
+
+	// Check if already present (by URL or Path).
+	key := song.URL
+	if key == "" {
+		key = song.Path
+	}
+	for i, e := range existing {
+		ek := e.URL
+		if ek == "" {
+			ek = e.Path
+		}
+		if ek == key {
+			// Remove it.
+			existing = append(existing[:i], existing[i+1:]...)
+			if err := playlist.Save(favPath, existing); err != nil {
+				jlog.Errorf("toggleFavorite remove: %v", err)
+				return "Error saving favorites"
+			}
+			jlog.Infof("ui: removed from favorites: %q", key)
+			return "Removed from Favorites"
+		}
+	}
+
+	// Add it.
+	entry := playlist.Entry{
+		Title:  song.Title,
+		Author: song.Author,
+		URL:    song.URL,
+		Path:   song.Path,
+	}
+	existing = append(existing, entry)
+	if err := playlist.Save(favPath, existing); err != nil {
+		jlog.Errorf("toggleFavorite add: %v", err)
+		return "Error saving favorites"
+	}
+	jlog.Infof("ui: added to favorites: %q", key)
+	return "Added to Favorites"
+}
+
+// loadLogLines reads ~/jammer/jammer.log into m.logLines.
+func (m *Model) loadLogLines() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		m.logLines = []string{"Could not find home directory"}
+		return
+	}
+	logPath := filepath.Join(home, "jammer", "jammer.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		m.logLines = []string{"Log file not found: " + logPath}
+		return
+	}
+	m.logLines = strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 }
 
 // ── On-demand download ────────────────────────────────────────────────────────
@@ -1178,7 +1396,13 @@ func (m *Model) rebuildFilter() {
 	lower := strings.ToLower(m.filter)
 	m.filteredIdxs = m.filteredIdxs[:0]
 	for i, s := range m.songs {
-		if strings.Contains(strings.ToLower(s.DisplayTitle()), lower) {
+		var haystack string
+		if m.filterByAuthor {
+			haystack = strings.ToLower(s.Author)
+		} else {
+			haystack = strings.ToLower(s.DisplayTitle())
+		}
+		if strings.Contains(haystack, lower) {
 			m.filteredIdxs = append(m.filteredIdxs, i)
 		}
 	}
@@ -1294,6 +1518,14 @@ func (m Model) View() tea.View {
 		b.WriteString(m.renderInfo())
 	case viewAddSong:
 		b.WriteString(m.renderAddSong())
+	case viewPlaySong:
+		b.WriteString(m.renderPlaySong())
+	case viewSaveAs:
+		b.WriteString(m.renderSaveAs())
+	case viewLog:
+		b.WriteString(m.renderLog())
+	case viewShowSongs:
+		b.WriteString(m.renderShowSongs())
 	case viewPlaylists:
 		// Playlists view: show song path in outer box header
 		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderPlaylists()))
@@ -1577,6 +1809,17 @@ func (m Model) renderSongsDefault() string {
 		b.WriteString("\n")
 	}
 
+	// ── Filter prompt (shown when search is active) ───────────────────────────
+	if m.filtering || m.filter != "" {
+		label := "Search:"
+		if m.filterByAuthor {
+			label = "Author:"
+		}
+		cursor := styleBarFill.Render("█")
+		prompt := styleHelp.Render(fmt.Sprintf("  %s %s", label, m.filter)) + cursor
+		b.WriteString(prompt + "\n")
+	}
+
 	// ── Mini help bar (auto-sized, left-aligned, lowercase keybinds) ──────────
 	helpKey, _ := m.kb.Get("Help")
 	settingsKey, _ := m.kb.Get("Settings")
@@ -1596,6 +1839,11 @@ func (m Model) renderSongsDefault() string {
 	// ── Progress/time bar ─────────────────────────────────────────────────────
 	b.WriteString(boxStyle.Render(m.renderProgressBar()))
 	b.WriteString("\n")
+
+	// ── Status flash message ──────────────────────────────────────────────────
+	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 3*time.Second {
+		b.WriteString(styleHelp.Render("  "+m.statusMsg) + "\n")
+	}
 
 	return b.String()
 }
@@ -1695,6 +1943,17 @@ func (m Model) renderSongsAll() string {
 	b.WriteString("\n")
 
 	// ── Mini help bar ─────────────────────────────────────────────────────────
+	// ── Filter prompt (shown when search is active) ───────────────────────────
+	if m.filtering || m.filter != "" {
+		label := "Search:"
+		if m.filterByAuthor {
+			label = "Author:"
+		}
+		cursor := styleBarFill.Render("█")
+		prompt := styleHelp.Render(fmt.Sprintf("  %s %s", label, m.filter)) + cursor
+		b.WriteString(prompt + "\n")
+	}
+
 	helpKey, _ := m.kb.Get("Help")
 	settingsKey, _ := m.kb.Get("Settings")
 	playlistKey, _ := m.kb.Get("ShowHidePlaylist")
@@ -1713,6 +1972,11 @@ func (m Model) renderSongsAll() string {
 	// ── Progress/time bar ─────────────────────────────────────────────────────
 	b.WriteString(boxStyle.Render(m.renderProgressBar()))
 	b.WriteString("\n")
+
+	// ── Status flash message ──────────────────────────────────────────────────
+	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 3*time.Second {
+		b.WriteString(styleHelp.Render("  "+m.statusMsg) + "\n")
+	}
 
 	return b.String()
 }
@@ -2407,6 +2671,290 @@ func (m Model) renderAddSong() string {
 
 // ── Visualizer ────────────────────────────────────────────────────────────────
 
+// ── Phase 2: Play Song modal (#4) ─────────────────────────────────────────────
+
+func (m Model) renderPlaySong() string {
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("  Play Song") + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Enter a file path or URL to insert and play immediately") + "\n\n")
+	cursor := styleBarFill.Render("█")
+	b.WriteString(styleHelp.Render("  ") + m.modalInput + cursor + "\n")
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Enter: play  ESC: cancel") + "\n")
+	return b.String()
+}
+
+func (m Model) handlePlaySongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+	if keyStr == "esc" {
+		m.view = viewDefault
+		m.modalInput = ""
+		return m, nil
+	}
+	if keyStr == "enter" {
+		input := strings.TrimSpace(m.modalInput)
+		m.view = viewDefault
+		m.modalInput = ""
+		if input == "" {
+			return m, nil
+		}
+		song := player.Song{}
+		if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+			song.URL = input
+			song.Title = input
+		} else {
+			song.Path = input
+			if info, err := tags.Read(input); err == nil && info.Title != "" {
+				song.Title = info.Title
+				song.Author = info.Artist
+			} else {
+				song.Title = strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))
+			}
+		}
+		// Insert after current playing position.
+		insertAt := m.playing + 1
+		songs := m.p.Songs()
+		newSongs := make([]player.Song, 0, len(songs)+1)
+		newSongs = append(newSongs, songs[:insertAt]...)
+		newSongs = append(newSongs, song)
+		newSongs = append(newSongs, songs[insertAt:]...)
+		m.p.SetSongs(newSongs)
+		m.songs = m.p.Songs()
+		m.saveCurrentPlaylist()
+		if err := m.p.PlayIndex(insertAt); err != nil {
+			jlog.Errorf("ui: PlaySong PlayIndex failed: %v", err)
+		}
+		m.playing = insertAt
+		m.prevPlaying = insertAt
+		return m, tea.Batch(m.downloadIfNeeded(insertAt), m.startViz(0))
+	}
+	if keyStr == "space" {
+		m.modalInput += " "
+		return m, nil
+	}
+	if len(keyStr) == 1 && keyStr[0] >= 32 && keyStr[0] <= 126 {
+		m.modalInput += keyStr
+		return m, nil
+	}
+	if keyStr == "backspace" && len(m.modalInput) > 0 {
+		m.modalInput = m.modalInput[:len(m.modalInput)-1]
+		return m, nil
+	}
+	return m, nil
+}
+
+// ── Phase 2: Save As modal (#8) ───────────────────────────────────────────────
+
+func (m Model) renderSaveAs() string {
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("  Save Playlist As") + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Enter a name for the new playlist (without extension)") + "\n\n")
+	cursor := styleBarFill.Render("█")
+	b.WriteString(styleHelp.Render("  ") + m.modalInput + cursor + "\n")
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  Enter: save  ESC: cancel") + "\n")
+	return b.String()
+}
+
+func (m Model) handleSaveAsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+	if keyStr == "esc" {
+		m.view = viewDefault
+		m.modalInput = ""
+		return m, nil
+	}
+	if keyStr == "enter" {
+		name := strings.TrimSpace(m.modalInput)
+		m.view = viewDefault
+		m.modalInput = ""
+		if name == "" {
+			return m, nil
+		}
+		path := filepath.Join(m.plsDir, name+".jammer")
+		songs := m.p.Songs()
+		entries := make([]playlist.Entry, len(songs))
+		for i, s := range songs {
+			entries[i] = playlist.Entry{Path: s.Path, URL: s.URL, Title: s.Title, Author: s.Author}
+		}
+		if err := playlist.Save(path, entries); err != nil {
+			jlog.Errorf("ui: save-as failed: %v", err)
+			m.setStatus("Save failed: " + err.Error())
+		} else {
+			m.setStatus("Saved as " + name)
+		}
+		return m, nil
+	}
+	if keyStr == "space" {
+		m.modalInput += " "
+		return m, nil
+	}
+	if len(keyStr) == 1 && keyStr[0] >= 32 && keyStr[0] <= 126 {
+		m.modalInput += keyStr
+		return m, nil
+	}
+	if keyStr == "backspace" && len(m.modalInput) > 0 {
+		m.modalInput = m.modalInput[:len(m.modalInput)-1]
+		return m, nil
+	}
+	return m, nil
+}
+
+// ── Phase 2: Log view (#12) ───────────────────────────────────────────────────
+
+func (m Model) renderLog() string {
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("  Jammer Log") + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	visibleLines := m.height - 6
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+	lines := m.logLines
+	end := m.logOffset + visibleLines
+	if end > len(lines) {
+		end = len(lines)
+	}
+	start := m.logOffset
+	if start > len(lines) {
+		start = len(lines)
+	}
+	for _, line := range lines[start:end] {
+		b.WriteString(styleHelp.Render("  "+truncate(line, m.width-4)) + "\n")
+	}
+	// Pad remaining lines.
+	for i := end - start; i < visibleLines; i++ {
+		b.WriteString("\n")
+	}
+
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render(fmt.Sprintf("  ↑/↓ to scroll  ESC: close  (%d/%d lines)", m.logOffset, len(lines))) + "\n")
+	return b.String()
+}
+
+func (m Model) handleLogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+	visibleLines := m.height - 6
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+	switch keyStr {
+	case "esc", "ctrl+l":
+		m.view = viewDefault
+	case "up", "k":
+		if m.logOffset > 0 {
+			m.logOffset--
+		}
+	case "down", "j":
+		if m.logOffset+visibleLines < len(m.logLines) {
+			m.logOffset++
+		}
+	case "home", "g":
+		m.logOffset = 0
+	case "end", "G":
+		max := len(m.logLines) - visibleLines
+		if max < 0 {
+			max = 0
+		}
+		m.logOffset = max
+	}
+	return m, nil
+}
+
+// ── Phase 2: Show Songs from another playlist (#11) ───────────────────────────
+
+func (m Model) renderShowSongs() string {
+	var b strings.Builder
+	title := "Songs"
+	if m.showSongsName != "" {
+		title = m.showSongsName
+	}
+	b.WriteString(styleTitle.Render("  "+title) + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	visibleLines := m.height - 6
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+	entries := m.showSongsEntries
+	end := m.showSongsOffset + visibleLines
+	if end > len(entries) {
+		end = len(entries)
+	}
+	start := m.showSongsOffset
+	if start > len(entries) {
+		start = len(entries)
+	}
+	for i, e := range entries[start:end] {
+		realIdx := start + i
+		displayTitle := e.Title
+		if displayTitle == "" {
+			displayTitle = strings.TrimSuffix(filepath.Base(e.Path), filepath.Ext(e.Path))
+		}
+		line := fmt.Sprintf("  %s", truncate(displayTitle, m.width-4))
+		if realIdx == m.showSongsCursor {
+			b.WriteString(styleSelected.Render(line))
+		} else {
+			b.WriteString(styleNormal.Render(line))
+		}
+		b.WriteString("\n")
+	}
+	for i := end - start; i < visibleLines; i++ {
+		b.WriteString("\n")
+	}
+
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  ↑/↓ to scroll  ESC: close") + "\n")
+	return b.String()
+}
+
+func (m Model) handleShowSongsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	keyStr := msg.String()
+	visibleLines := m.height - 6
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+	switch keyStr {
+	case "esc":
+		m.view = viewDefault
+		m.showSongsEntries = nil
+		m.showSongsName = ""
+		m.showSongsCursor = 0
+		m.showSongsOffset = 0
+	case "up", "k":
+		if m.showSongsCursor > 0 {
+			m.showSongsCursor--
+			if m.showSongsCursor < m.showSongsOffset {
+				m.showSongsOffset = m.showSongsCursor
+			}
+		}
+	case "down", "j":
+		if m.showSongsCursor < len(m.showSongsEntries)-1 {
+			m.showSongsCursor++
+			if m.showSongsCursor >= m.showSongsOffset+visibleLines {
+				m.showSongsOffset = m.showSongsCursor - visibleLines + 1
+			}
+		}
+	case "home", "g":
+		m.showSongsCursor = 0
+		m.showSongsOffset = 0
+	case "end", "G":
+		m.showSongsCursor = len(m.showSongsEntries) - 1
+		if m.showSongsCursor < 0 {
+			m.showSongsCursor = 0
+		}
+		m.showSongsOffset = m.showSongsCursor - visibleLines + 1
+		if m.showSongsOffset < 0 {
+			m.showSongsOffset = 0
+		}
+	}
+	return m, nil
+}
+
 // renderVisualizer renders FFT visualization bars
 func (m Model) renderVisualizer() string {
 	if len(m.vizBars) == 0 {
@@ -2532,7 +3080,11 @@ func (m Model) renderPlaylists() string {
 	}
 
 	b.WriteByte('\n')
-	b.WriteString(styleHelp.Render(" space: load playlist  ↑/↓: navigate  tab: back to songs  q: quit") + "\n")
+	if m.showSongsPickMode {
+		b.WriteString(styleHelp.Render(" enter/space: show songs  ↑/↓: navigate  esc: back  q: quit") + "\n")
+	} else {
+		b.WriteString(styleHelp.Render(" space: load playlist  ↑/↓: navigate  tab: back to songs  q: quit") + "\n")
+	}
 	return b.String()
 }
 
