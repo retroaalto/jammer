@@ -240,7 +240,7 @@ type VizConfig struct {
 	RefreshTime          int     // tick interval in ms
 	MinFrequency         float64 // Hz — left edge of bar display
 	MaxFrequency         float64 // Hz — right edge of bar display
-	FrequencyMultiplier  float64 // linear multiplier inside log10 step
+	FrequencyMultiplier  float64 // linear amplitude multiplier applied after power scaling
 	LogarithmicMultiplier float64 // power exponent applied to raw FFT values
 	PausingEffect        bool    // decay bars when paused
 }
@@ -248,11 +248,11 @@ type VizConfig struct {
 // defaultVizConfig returns the built-in defaults (matches Visualizer.ini defaults).
 func defaultVizConfig() VizConfig {
 	return VizConfig{
-		RefreshTime:          35,
-		MinFrequency:         50,
-		MaxFrequency:         17000,
-		FrequencyMultiplier:  900000000,
-		LogarithmicMultiplier: 4,
+		RefreshTime:          100,
+		MinFrequency:         80,
+		MaxFrequency:         16000,
+		FrequencyMultiplier:  2.5,
+		LogarithmicMultiplier: 0.45,
 		PausingEffect:        true,
 	}
 }
@@ -807,10 +807,11 @@ func (m *Model) stepViz(nBars int) {
 			sum += v
 		}
 		avg := float64(sum) / float64(hiBin-loBin)
-		// Apply power exponent then log10 scale — mirrors the classic formula:
-		//   pow(fftValue, logMult) → log10(1 + value * freqMult)
-		avg = math.Pow(avg, m.vizCfg.LogarithmicMultiplier)
-		avg = math.Log10(1 + avg*m.vizCfg.FrequencyMultiplier)
+		// Power scaling + multiplier tuned for raw (unnormalized) FFT magnitudes.
+		avg = math.Pow(avg, m.vizCfg.LogarithmicMultiplier) * m.vizCfg.FrequencyMultiplier
+		// Small rising gain for high-frequency compensation.
+		gain := 1.0 + 1.2*(float64(i)/float64(nBars-1))
+		avg *= gain
 		if avg > 1 {
 			avg = 1
 		}

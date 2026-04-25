@@ -175,24 +175,25 @@ Controls the audio spectrum visualizer. Place this file in the jammer data direc
 ```ini
 [Audio Visualizer]
 ; Refresh time in milliseconds
-RefreshTime = 35
-MinFrequency = 50
-MaxFrequency = 17000
-; Logarithmic multiplier for FFT values — higher = more sensitive
-FrequencyMultiplier = 900000000
-; Power exponent applied before the log step — tune alongside FrequencyMultiplier
-LogarithmicMultiplier = 4
+RefreshTime = 100
+; Frequency range displayed (Hz)
+MinFrequency = 80
+MaxFrequency = 16000
+; Power exponent applied to raw FFT values
+LogarithmicMultiplier = 0.45
+; Linear amplitude multiplier applied after power scaling
+FrequencyMultiplier = 2.5
 ; Gradually shrink the visualizer when playback is paused
 PausingEffect = true
 ```
 
 | Field | Default | Description |
 |---|---|---|
-| `RefreshTime` | `35` | Visualizer tick interval in milliseconds |
-| `MinFrequency` | `50` | Lowest frequency (Hz) shown on the left edge of the bar display |
-| `MaxFrequency` | `17000` | Highest frequency (Hz) shown on the right edge |
-| `FrequencyMultiplier` | `900000000` | Linear multiplier applied inside the `log10` step |
-| `LogarithmicMultiplier` | `4` | Power exponent applied to raw FFT values before the log step |
+| `RefreshTime` | `100` | Visualizer tick interval in milliseconds |
+| `MinFrequency` | `80` | Lowest frequency (Hz) shown on the left edge of the bar display |
+| `MaxFrequency` | `16000` | Highest frequency (Hz) shown on the right edge |
+| `LogarithmicMultiplier` | `0.45` | Power exponent applied to raw FFT values — lower = more sensitive to quiet sounds |
+| `FrequencyMultiplier` | `2.5` | Linear amplitude multiplier — higher = taller bars overall |
 | `PausingEffect` | `true` | When `true`, bars decay toward zero while playback is paused |
 
 ---
