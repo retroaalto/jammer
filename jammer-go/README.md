@@ -393,6 +393,178 @@ After a successful download:
 
 ---
 
+## Themes
+
+### Switching themes
+
+Press **Shift+T** in the main view to cycle through available themes. The active theme name is stored in `settings.json` under the `"theme"` key.
+
+### Built-in themes
+
+| Name | Description |
+|---|---|
+| `default` | Classic green/cyan palette |
+| `dracula` | Purple/pink Dracula palette |
+| `nord` | Cool blue Nord palette |
+| `gruvbox` | Warm earth-tone Gruvbox palette |
+
+### Custom themes
+
+Place `.json` theme files in the themes directory:
+
+- **XDG**: `~/.local/share/jammer/themes/`
+- **Legacy**: `~/jammer/themes/`
+
+Theme files follow the classic Jammer JSON schema and are compatible with `.json` themes from the C# version of Jammer. JS-style comments (`//` and `/* */`) are supported.
+
+### Theme file format
+
+Full default theme — copy this as a starting point:
+
+```json
+{
+  "Playlist": {
+    "BorderStyle": "rounded",
+    "BorderColor": [0, 255, 255],
+    "PathColor": "cyan",
+    "ErrorColor": "red bold",
+    "SuccessColor": "green bold",
+    "InfoColor": "yellow",
+    "PlaylistNameColor": "cyan bold",
+    "MiniHelpBorderStyle": "rounded",
+    "MiniHelpBorderColor": [0, 255, 255],
+    "HelpLetterColor": "cyan bold",
+    "ForHelpTextColor": "white",
+    "SettingsLetterColor": "cyan bold",
+    "ForSettingsTextColor": "white",
+    "PlaylistLetterColor": "cyan bold",
+    "ForPlaylistTextColor": "white",
+    "ForSeperatorTextColor": "grey",
+    "VisualizerColor": "green",
+    "RandomTextColor": "yellow"
+  },
+  "GeneralPlaylist": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded",
+    "CurrentSongColor": "cyan bold",
+    "PreviousSongColor": "white",
+    "NextSongColor": "white",
+    "NoneSongColor": "grey"
+  },
+  "WholePlaylist": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded",
+    "ChoosingColor": "cyan bold",
+    "NormalSongColor": "white",
+    "CurrentSongColor": "green bold"
+  },
+  "Time": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded",
+    "PlayingLetterColor": "green bold",
+    "PlayingLetterLetter": " ▶  ",
+    "PausedLetterColor": "yellow bold",
+    "PausedLetterLetter": " ⏸  ",
+    "StoppedLetterColor": "red bold",
+    "StoppedLetterLetter": " ■  ",
+    "NextLetterColor": "cyan",
+    "NextLetterLetter": " ⏭  ",
+    "PreviousLetterColor": "cyan",
+    "PreviousLetterLetter": " ⏮  ",
+    "ShuffleLetterOffColor": "white",
+    "ShuffleOffLetter": " ⇒  ",
+    "ShuffleLetterOnColor": "green bold",
+    "ShuffleOnLetter": " ⇒  ",
+    "LoopLetterOffColor": "white",
+    "LoopOffLetter": " ↻  ",
+    "LoopLetterOnColor": "green bold",
+    "LoopOnLetter": " ⟳  ",
+    "LoopLetterOnceColor": "yellow bold",
+    "LoopOnceLetter": " 1  ",
+    "TimeColor": "cyan",
+    "VolumeColorNotMuted": "green",
+    "VolumeColorMuted": "red bold",
+    "TimebarColor": "cyan",
+    "TimebarLetter": "─"
+  },
+  "GeneralHelp": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded",
+    "HeaderTextColor": "cyan bold",
+    "ControlTextColor": "cyan",
+    "DescriptionTextColor": "white"
+  },
+  "GeneralSettings": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded",
+    "HeaderTextColor": "cyan bold",
+    "NameTextColor": "cyan",
+    "ValueTextColor": "white",
+    "HintTextColor": "grey"
+  },
+  "EditKeybinds": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded",
+    "HeaderTextColor": "cyan bold",
+    "DescriptionTextColor": "white",
+    "ControlTextColor": "cyan",
+    "CurrentTextColor": "green bold",
+    "EnteredTextColor": "yellow bold"
+  },
+  "LanguageChange": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded"
+  },
+  "InputBox": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded",
+    "TitleColor": "cyan bold",
+    "TextColor": "white",
+    "TitleErrorColor": "red bold",
+    "TextErrorColor": "red"
+  },
+  "Visualizer": {
+    "PlayingColor": "green",
+    "PausedColor": "grey",
+    "UnicodeMap": "▁▂▃▄▅▆▇█",
+    "GradientColors": ["#00FF00", "#FFFF00", "#FF0000"],
+    "GradientPausedColors": ["#444444", "#888888"]
+  },
+  "Rss": {
+    "BorderColor": [0, 255, 255],
+    "BorderStyle": "rounded",
+    "TitleColor": "cyan bold",
+    "NormalColor": "white"
+  }
+}
+```
+
+### Color format
+
+Colors are Spectre.Console-style strings. Examples:
+
+| Value | Meaning |
+|---|---|
+| `"cyan"` | Named terminal color |
+| `"cyan bold"` | Named color with bold modifier |
+| `"grey strikethrough"` | Named color with strikethrough |
+| `"#FF6600"` | Hex color (24-bit) |
+
+`BorderColor` fields use RGB arrays: `[r, g, b]` where each value is 0–255.
+
+### Gradient visualizer (jammer-go extension)
+
+The `Visualizer` section accepts two extra fields not present in classic Jammer:
+
+| Field | Description |
+|---|---|
+| `GradientColors` | 2+ hex color stops from low bar to high bar, applied while playing |
+| `GradientPausedColors` | Same, applied while paused |
+
+When `GradientColors` has fewer than 2 stops the visualizer falls back to the flat `PlayingColor`. Setting `GradientColors: []` or omitting it disables gradient and uses the flat color.
+
+---
+
 ## Logging
 
 All events are appended to `jammer.log` in the state directory (`~/.local/state/jammer/` for XDG installs, `~/jammer/` for legacy). The active path is logged at startup.

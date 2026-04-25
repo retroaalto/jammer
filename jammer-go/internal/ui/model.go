@@ -92,6 +92,10 @@ type dlState struct {
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
+// activePalette holds the currently applied theme palette so render functions
+// can access border colors, glyphs, and per-section colors.
+var activePalette theme.Palette
+
 var (
 	styleTitle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("212")).
@@ -137,46 +141,96 @@ var (
 
 	styleTabInactive = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
+
+	// ── Help screen ──────────────────────────────────────────────────────
+	styleHelpHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	styleHelpControl = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	styleHelpDesc    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+
+	// ── Settings screen ───────────────────────────────────────────────────
+	styleSettingsHeader = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	styleSettingsName   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	styleSettingsValue  = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	styleSettingsHint   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	// ── Edit Keybinds screen ──────────────────────────────────────────────
+	styleKeybindsHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	styleKeybindsDesc    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	styleKeybindsControl = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	styleKeybindsCurrent = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	styleKeybindsEntered = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+
+	// ── RSS feed ──────────────────────────────────────────────────────────
+	styleRssTitle  = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	styleRssNormal = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+
+	// ── Input / modal ──────────────────────────────────────────────────────
+	styleInputTitle    = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	styleInputText     = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	styleInputTitleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	styleInputTextErr  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 )
 
 // applyTheme rebuilds all global style variables from the given palette.
 func applyTheme(p theme.Palette) {
-	styleTitle = lipgloss.NewStyle().Foreground(p.Title).Bold(true)
-	styleSelected = lipgloss.NewStyle().Foreground(p.Selected).Background(p.SelectedBg).Bold(true)
-	styleNormal = lipgloss.NewStyle().Foreground(p.Normal)
-	stylePlaying = lipgloss.NewStyle().Foreground(p.Playing).Bold(true)
-	styleHelp = lipgloss.NewStyle().Foreground(p.Help)
-	styleBar = lipgloss.NewStyle().Foreground(p.Bar)
-	styleBarFill = lipgloss.NewStyle().Foreground(p.BarFill)
-	styleVolume = lipgloss.NewStyle().Foreground(p.Volume)
-	styleNotDL = lipgloss.NewStyle().Foreground(p.NotDL)
-	styleDLing = lipgloss.NewStyle().Foreground(p.Downloading)
-	styleErr = lipgloss.NewStyle().Foreground(p.Error)
-	styleTabActive = lipgloss.NewStyle().Foreground(p.Title).Bold(true).Underline(true)
+	activePalette = p
+
+	// WholePlaylist / song list colors
+	styleTitle = lipgloss.NewStyle().Foreground(p.PlaylistTitle).Bold(true)
+	styleSelected = lipgloss.NewStyle().Foreground(p.WholePlaylistChoosing).Background(p.PlaylistSelectedBg).Bold(true)
+	styleNormal = lipgloss.NewStyle().Foreground(p.WholePlaylistNormal)
+	stylePlaying = lipgloss.NewStyle().Foreground(p.WholePlaylistCurrent).Bold(true)
+	styleHelp = lipgloss.NewStyle().Foreground(p.PlaylistHelp)
+	styleBar = lipgloss.NewStyle().Foreground(p.TimebarColor)
+	styleBarFill = lipgloss.NewStyle().Foreground(p.TimebarFill)
+	styleVolume = lipgloss.NewStyle().Foreground(p.VolumeColor)
+	styleNotDL = lipgloss.NewStyle().Foreground(p.PlaylistNotDL)
+	styleDLing = lipgloss.NewStyle().Foreground(p.PlaylistDownloading)
+	styleErr = lipgloss.NewStyle().Foreground(p.PlaylistError)
+	styleTabActive = lipgloss.NewStyle().Foreground(p.TabActive).Bold(true).Underline(true)
 	styleTabInactive = lipgloss.NewStyle().Foreground(p.TabInactive)
+
+	// Help screen
+	styleHelpHeader = lipgloss.NewStyle().Foreground(p.HelpHeader).Bold(true)
+	styleHelpControl = lipgloss.NewStyle().Foreground(p.HelpControl)
+	styleHelpDesc = lipgloss.NewStyle().Foreground(p.HelpDescription)
+
+	// Settings screen
+	styleSettingsHeader = lipgloss.NewStyle().Foreground(p.SettingsHeader).Bold(true)
+	styleSettingsName = lipgloss.NewStyle().Foreground(p.SettingsName)
+	styleSettingsValue = lipgloss.NewStyle().Foreground(p.SettingsValue)
+	styleSettingsHint = lipgloss.NewStyle().Foreground(p.SettingsChangeHint)
+
+	// Edit Keybinds screen
+	styleKeybindsHeader = lipgloss.NewStyle().Foreground(p.KeybindsHeader).Bold(true)
+	styleKeybindsDesc = lipgloss.NewStyle().Foreground(p.KeybindsDescription)
+	styleKeybindsControl = lipgloss.NewStyle().Foreground(p.KeybindsControl)
+	styleKeybindsCurrent = lipgloss.NewStyle().Foreground(p.KeybindsCurrentKey)
+	styleKeybindsEntered = lipgloss.NewStyle().Foreground(p.KeybindsEnteredKey)
+
+	// RSS feed
+	styleRssTitle = lipgloss.NewStyle().Foreground(p.RssTitle).Bold(true)
+	styleRssNormal = lipgloss.NewStyle().Foreground(p.RssDescription)
+
+	// Input / modals
+	styleInputTitle = lipgloss.NewStyle().Foreground(p.InputTitle).Bold(true)
+	styleInputText = lipgloss.NewStyle().Foreground(p.InputText)
+	styleInputTitleErr = lipgloss.NewStyle().Foreground(p.InputTitleError).Bold(true)
+	styleInputTextErr = lipgloss.NewStyle().Foreground(p.InputTextError)
+
+	rebuildVizStyles()
 }
 
-// Precomputed gradient palette for the visualizer (green → yellow → red).
-var vizPalette = func() []lipgloss.Style {
-	p := make([]lipgloss.Style, 32)
-	for i := 0; i < 32; i++ {
-		h := float64(i) / 31.0
-		var r, g int
-		if h < 0.5 {
-			// green → yellow
-			t := h * 2
-			r = int(255 * t)
-			g = 255
-		} else {
-			// yellow → red
-			t := (h - 0.5) * 2
-			r = 255
-			g = int(255 * (1 - t))
-		}
-		p[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("#%02X%02X00", r, g)))
-	}
-	return p
-}()
+// vizPlayingStyle / vizPausedStyle are updated by rebuildVizStyles() whenever
+// the theme changes. They replace the old hardcoded gradient palette.
+var vizPlayingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+var vizPausedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+// rebuildVizStyles updates the visualizer styles from the active palette.
+func rebuildVizStyles() {
+	vizPlayingStyle = lipgloss.NewStyle().Foreground(activePalette.VizPlayingColor)
+	vizPausedStyle = lipgloss.NewStyle().Foreground(activePalette.VizPausedColor)
+}
 
 // ── Visualizer config ─────────────────────────────────────────────────────────
 
@@ -2038,9 +2092,13 @@ func (m Model) renderSongsDefault() string {
 	textW := m.songBoxTextWidth() // actual text area = boxW - 2
 
 	// ── 3-song inner box ──────────────────────────────────────────────────────
+	boxBorderColor := activePalette.PlaylistBorderColor
+	if boxBorderColor == "" {
+		boxBorderColor = lipgloss.Color("61")
+	}
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("61")).
+		BorderForeground(boxBorderColor).
 		Padding(0, 1).
 		Width(boxW)
 
@@ -2148,9 +2206,13 @@ func (m Model) renderSongsDefault() string {
 	playlistKey, _ := m.kb.Get("ShowHidePlaylist")
 	helpText := fmt.Sprintf("%s for help | %s for settings | %s for playlist",
 		helpKey, settingsKey, playlistKey)
+	helpBarBorderColor := activePalette.GeneralPlaylistBorderColor
+	if helpBarBorderColor == "" {
+		helpBarBorderColor = lipgloss.Color("61")
+	}
 	helpBar := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("61")).
+		BorderForeground(helpBarBorderColor).
 		Padding(0, 1).
 		Render(helpText)
 	b.WriteString(helpBar + "\n")
@@ -2176,9 +2238,13 @@ func (m Model) renderSongsAll() string {
 	boxW := m.songBoxWidth()
 	textW := m.songBoxTextWidth()
 
+	allBoxBorderColor := activePalette.WholePlaylistBorderColor
+	if allBoxBorderColor == "" {
+		allBoxBorderColor = lipgloss.Color("61")
+	}
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("61")).
+		BorderForeground(allBoxBorderColor).
 		Padding(0, 1).
 		Width(boxW)
 
@@ -2281,9 +2347,13 @@ func (m Model) renderSongsAll() string {
 	playlistKey, _ := m.kb.Get("ShowHidePlaylist")
 	helpText := fmt.Sprintf("%s for help | %s for settings | %s for playlist",
 		helpKey, settingsKey, playlistKey)
+	allHelpBarBorderColor := activePalette.WholePlaylistBorderColor
+	if allHelpBarBorderColor == "" {
+		allHelpBarBorderColor = lipgloss.Color("61")
+	}
 	helpBar := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("61")).
+		BorderForeground(allHelpBarBorderColor).
 		Padding(0, 1).
 		Render(helpText)
 	b.WriteString(helpBar + "\n")
@@ -2362,8 +2432,8 @@ func (m Model) renderHelp() string {
 	var inner strings.Builder
 
 	// Header row
-	inner.WriteString(styleTitle.Render(row("Controls", "Description", "ModControls", fmt.Sprintf("Description (%d/%d)", page+1, totalPages))) + "\n")
-	inner.WriteString(styleHelp.Render(sepRow) + "\n")
+	inner.WriteString(styleHelpHeader.Render(row("Controls", "Description", "ModControls", fmt.Sprintf("Description (%d/%d)", page+1, totalPages))) + "\n")
+	inner.WriteString(styleHelpControl.Render(sepRow) + "\n")
 
 	// Item rows (pairs)
 	mid := (len(pageItems) + 1) / 2
@@ -2378,7 +2448,7 @@ func (m Model) renderHelp() string {
 			rightKey = keybinds.GetDisplay(right.key)
 			rightDesc = right.desc
 		}
-		inner.WriteString(styleHelp.Render(row(leftKey, leftDesc, rightKey, rightDesc)) + "\n")
+		inner.WriteString(styleHelpDesc.Render(row(leftKey, leftDesc, rightKey, rightDesc)) + "\n")
 	}
 
 	// Navigation hints
@@ -2391,7 +2461,7 @@ func (m Model) renderHelp() string {
 		navParts = append(navParts, "→ next page")
 	}
 	navParts = append(navParts, "ESC: back")
-	inner.WriteString(styleHelp.Render(strings.Join(navParts, "  ")))
+	inner.WriteString(styleHelpControl.Render(strings.Join(navParts, "  ")))
 
 	return m.renderOuterBox(m.currentSongPath(), inner.String())
 }
@@ -2498,8 +2568,8 @@ func (m Model) renderSettings() string {
 	pageLabel := fmt.Sprintf("%d/%d", page+1, totalPages)
 
 	var inner strings.Builder
-	inner.WriteString(styleTitle.Render(row("Settings", "Value", "Change Value ("+pageLabel+")")) + "\n")
-	inner.WriteString(styleHelp.Render(sepRow) + "\n")
+	inner.WriteString(styleSettingsHeader.Render(row("Settings", "Value", "Change Value ("+pageLabel+")")) + "\n")
+	inner.WriteString(styleSettingsHint.Render(sepRow) + "\n")
 
 	for i, s := range pageItems {
 		globalIdx := start + i
@@ -2507,16 +2577,16 @@ func (m Model) renderSettings() string {
 		if globalIdx == m.settingsCursor {
 			inner.WriteString(styleSelected.Render(r) + "\n")
 		} else {
-			inner.WriteString(styleHelp.Render(r) + "\n")
+			inner.WriteString(styleSettingsName.Render(r) + "\n")
 		}
 	}
 
 	// Fill remaining rows so the table always has itemsPerPage rows
 	for i := len(pageItems); i < itemsPerPage; i++ {
-		inner.WriteString(styleHelp.Render(row("", "", "")) + "\n")
+		inner.WriteString(styleSettingsName.Render(row("", "", "")) + "\n")
 	}
 
-	inner.WriteString(styleHelp.Render(sepRow) + "\n")
+	inner.WriteString(styleSettingsHint.Render(sepRow) + "\n")
 
 	// Navigation hints: left-aligned "← prev page" and right-aligned "next page →"
 	var navLeft, navRight string
@@ -2528,13 +2598,13 @@ func (m Model) renderSettings() string {
 	}
 	navWidth := c1W + 1 + c2W + 1 + c3W
 	navLine := navLeft + strings.Repeat(" ", navWidth-len([]rune(navLeft))-len([]rune(navRight))) + navRight
-	inner.WriteString(styleHelp.Render(navLine) + "\n")
+	inner.WriteString(styleSettingsHint.Render(navLine) + "\n")
 
 	// Escape box below the table
 	inner.WriteString("\n")
-	inner.WriteString(styleHelp.Render("╭──────────────────────╮") + "\n")
-	inner.WriteString(styleHelp.Render("│ To Main Menu: Escape │") + "\n")
-	inner.WriteString(styleHelp.Render("╰──────────────────────╯"))
+	inner.WriteString(styleSettingsHint.Render("╭──────────────────────╮") + "\n")
+	inner.WriteString(styleSettingsHint.Render("│ To Main Menu: Escape │") + "\n")
+	inner.WriteString(styleSettingsHint.Render("╰──────────────────────╯"))
 
 	return m.renderOuterBox(m.currentSongPath(), inner.String())
 }
@@ -2964,23 +3034,23 @@ func (m Model) handleAddSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) renderInfo() string {
 	var b strings.Builder
 
-	b.WriteString(styleTitle.Render("  Song Information") + "\n")
+	b.WriteString(styleInputTitle.Render("  Song Information") + "\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
 
 	if m.modalIdx >= 0 && m.modalIdx < len(m.songs) {
 		song := m.songs[m.modalIdx]
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  Title:    %s", song.DisplayTitle())) + "\n")
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  Author:   %s", song.Author)) + "\n")
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  URL:      %s", song.URL)) + "\n")
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  File:     %s", filepath.Base(song.Path))) + "\n")
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  Downloaded: %v", song.Downloaded())) + "\n")
+		b.WriteString(styleInputText.Render(fmt.Sprintf("  Title:    %s", song.DisplayTitle())) + "\n")
+		b.WriteString(styleInputText.Render(fmt.Sprintf("  Author:   %s", song.Author)) + "\n")
+		b.WriteString(styleInputText.Render(fmt.Sprintf("  URL:      %s", song.URL)) + "\n")
+		b.WriteString(styleInputText.Render(fmt.Sprintf("  File:     %s", filepath.Base(song.Path))) + "\n")
+		b.WriteString(styleInputText.Render(fmt.Sprintf("  Downloaded: %v", song.Downloaded())) + "\n")
 	} else {
-		b.WriteString(styleHelp.Render("  No song selected") + "\n")
+		b.WriteString(styleInputText.Render("  No song selected") + "\n")
 	}
 
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  ESC: close") + "\n")
+	b.WriteString(styleInputText.Render("  ESC: close") + "\n")
 
 	return b.String()
 }
@@ -2989,17 +3059,17 @@ func (m Model) renderInfo() string {
 func (m Model) renderAddSong() string {
 	var b strings.Builder
 
-	b.WriteString(styleTitle.Render("  Add Song") + "\n")
+	b.WriteString(styleInputTitle.Render("  Add Song") + "\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter URL or file path to add to playlist") + "\n\n")
+	b.WriteString(styleInputText.Render("  Enter URL or file path to add to playlist") + "\n\n")
 
 	// Input line
 	cursor := styleBarFill.Render("█")
-	b.WriteString(styleHelp.Render("  ") + m.modalInput + cursor + "\n")
+	b.WriteString(styleInputText.Render("  ") + m.modalInput + cursor + "\n")
 
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter: add  ESC: cancel") + "\n")
+	b.WriteString(styleInputText.Render("  Enter: add  ESC: cancel") + "\n")
 
 	return b.String()
 }
@@ -3010,14 +3080,14 @@ func (m Model) renderAddSong() string {
 
 func (m Model) renderPlaySong() string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("  Play Song") + "\n")
+	b.WriteString(styleInputTitle.Render("  Play Song") + "\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter a file path or URL to insert and play immediately") + "\n\n")
+	b.WriteString(styleInputText.Render("  Enter a file path or URL to insert and play immediately") + "\n\n")
 	cursor := styleBarFill.Render("█")
-	b.WriteString(styleHelp.Render("  ") + m.modalInput + cursor + "\n")
+	b.WriteString(styleInputText.Render("  ") + m.modalInput + cursor + "\n")
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter: play  ESC: cancel") + "\n")
+	b.WriteString(styleInputText.Render("  Enter: play  ESC: cancel") + "\n")
 	return b.String()
 }
 
@@ -3084,14 +3154,14 @@ func (m Model) handlePlaySongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) renderSaveAs() string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("  Save Playlist As") + "\n")
+	b.WriteString(styleInputTitle.Render("  Save Playlist As") + "\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter a name for the new playlist (without extension)") + "\n\n")
+	b.WriteString(styleInputText.Render("  Enter a name for the new playlist (without extension)") + "\n\n")
 	cursor := styleBarFill.Render("█")
-	b.WriteString(styleHelp.Render("  ") + m.modalInput + cursor + "\n")
+	b.WriteString(styleInputText.Render("  ") + m.modalInput + cursor + "\n")
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render("  Enter: save  ESC: cancel") + "\n")
+	b.WriteString(styleInputText.Render("  Enter: save  ESC: cancel") + "\n")
 	return b.String()
 }
 
@@ -3484,22 +3554,22 @@ func (m Model) handleSearchResultsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 func (m Model) renderEditKeybinds() string {
 	var b strings.Builder
 	if m.kbEditInput {
-		b.WriteString(styleTitle.Render("  Edit Keybinding") + "\n")
+		b.WriteString(styleKeybindsHeader.Render("  Edit Keybinding") + "\n")
 		b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  Action: %s", m.kbEditAction)) + "\n")
+		b.WriteString(styleKeybindsDesc.Render(fmt.Sprintf("  Action: %s", m.kbEditAction)) + "\n")
 		if m.kbEditCaptured != "" {
-			b.WriteString(styleHelp.Render(fmt.Sprintf("  Detected: %s", keybinds.GetDisplay(m.kbEditCaptured))) + "\n")
-			b.WriteString(styleHelp.Render("  Press Enter to confirm or ESC to cancel") + "\n")
+			b.WriteString(styleKeybindsCurrent.Render(fmt.Sprintf("  Detected: %s", keybinds.GetDisplay(m.kbEditCaptured))) + "\n")
+			b.WriteString(styleKeybindsControl.Render("  Press Enter to confirm or ESC to cancel") + "\n")
 		} else {
-			b.WriteString(styleHelp.Render("  Press the new key combination...") + "\n")
-			b.WriteString(styleHelp.Render("  (type the key name + Enter if direct capture fails)") + "\n")
+			b.WriteString(styleKeybindsDesc.Render("  Press the new key combination...") + "\n")
+			b.WriteString(styleKeybindsDesc.Render("  (type the key name + Enter if direct capture fails)") + "\n")
 		}
 		b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-		b.WriteString(styleHelp.Render("  ESC: cancel") + "\n")
+		b.WriteString(styleKeybindsControl.Render("  ESC: cancel") + "\n")
 		return b.String()
 	}
 
-	b.WriteString(styleTitle.Render("  Edit Keybindings") + "\n")
+	b.WriteString(styleKeybindsHeader.Render("  Edit Keybindings") + "\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
 
 	visibleLines := m.height - 6
@@ -3523,7 +3593,7 @@ func (m Model) renderEditKeybinds() string {
 		if realIdx == m.kbEditCursor {
 			b.WriteString(styleSelected.Render(truncate(line, m.width-2)))
 		} else {
-			b.WriteString(styleNormal.Render(truncate(line, m.width-2)))
+			b.WriteString(styleKeybindsDesc.Render(truncate(line, m.width-2)))
 		}
 		b.WriteString("\n")
 	}
@@ -3532,7 +3602,7 @@ func (m Model) renderEditKeybinds() string {
 	}
 
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render(fmt.Sprintf("  ↑/↓: navigate  Enter: edit  ESC: close  (%d/%d)", m.kbEditCursor+1, len(keys))) + "\n")
+	b.WriteString(styleKeybindsControl.Render(fmt.Sprintf("  ↑/↓: navigate  Enter: edit  ESC: close  (%d/%d)", m.kbEditCursor+1, len(keys))) + "\n")
 	return b.String()
 }
 
@@ -3635,6 +3705,60 @@ func (m Model) handleEditKeybindsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// lerpVizColor interpolates a color along a list of gradient stops.
+// t is in [0,1] where 0 = first stop and 1 = last stop.
+// Each stop is a lipgloss.Color (hex "#RRGGBB" or terminal index).
+// Adjacent stops are linearly interpolated in RGB space.
+func lerpVizColor(stops []lipgloss.Color, t float64) lipgloss.Color {
+	if len(stops) == 0 {
+		return ""
+	}
+	if len(stops) == 1 {
+		return stops[0]
+	}
+	if t <= 0 {
+		return stops[0]
+	}
+	if t >= 1 {
+		return stops[len(stops)-1]
+	}
+	seg := t * float64(len(stops)-1)
+	lo := int(seg)
+	hi := lo + 1
+	if hi >= len(stops) {
+		return stops[len(stops)-1]
+	}
+	frac := seg - float64(lo)
+
+	parse := func(c lipgloss.Color) (r, g, b float64) {
+		s := string(c)
+		if len(s) == 7 && s[0] == '#' {
+			var rv, gv, bv uint8
+			fmt.Sscanf(s[1:3], "%02x", &rv)
+			fmt.Sscanf(s[3:5], "%02x", &gv)
+			fmt.Sscanf(s[5:7], "%02x", &bv)
+			return float64(rv), float64(gv), float64(bv)
+		}
+		// Terminal index — can't interpolate, just return the nearest stop.
+		return -1, -1, -1
+	}
+
+	r0, g0, b0 := parse(stops[lo])
+	r1, g1, b1 := parse(stops[hi])
+	if r0 < 0 || r1 < 0 {
+		// Non-hex stop: snap to nearest
+		if frac < 0.5 {
+			return stops[lo]
+		}
+		return stops[hi]
+	}
+
+	r := r0 + (r1-r0)*frac
+	g := g0 + (g1-g0)*frac
+	b := b0 + (b1-b0)*frac
+	return lipgloss.Color(fmt.Sprintf("#%02X%02X%02X", int(r), int(g), int(b)))
+}
+
 // renderVisualizer renders FFT visualization bars
 func (m Model) renderVisualizer() string {
 	if len(m.vizBars) == 0 {
@@ -3651,7 +3775,21 @@ func (m Model) renderVisualizer() string {
 		barWidth = 1
 	}
 
-	barChars := []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+	// Use themed unicode map if available, fallback to built-in default.
+	barChars := activePalette.VizUnicodeMap
+	if len(barChars) == 0 {
+		barChars = []string{" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
+	}
+
+	isPlaying := m.p.State() == player.StatePlaying
+
+	// Choose gradient or flat style per bar.
+	gradient := activePalette.VizGradientPaused
+	flatStyle := vizPausedStyle
+	if isPlaying {
+		gradient = activePalette.VizGradient
+		flatStyle = vizPlayingStyle
+	}
 
 	var bars []string
 	for _, h := range m.vizBars {
@@ -3659,11 +3797,14 @@ func (m Model) renderVisualizer() string {
 		if idx >= len(barChars) {
 			idx = len(barChars) - 1
 		}
-		paletteIdx := int(h * 31)
-		if paletteIdx > 31 {
-			paletteIdx = 31
+		ch := strings.Repeat(barChars[idx], barWidth)
+
+		if len(gradient) >= 2 {
+			col := lerpVizColor(gradient, h)
+			bars = append(bars, lipgloss.NewStyle().Foreground(col).Render(ch))
+		} else {
+			bars = append(bars, flatStyle.Render(ch))
 		}
-		bars = append(bars, vizPalette[paletteIdx].Render(strings.Repeat(string(barChars[idx]), barWidth)))
 	}
 	return strings.Join(bars, "")
 }
@@ -3671,32 +3812,91 @@ func (m Model) renderVisualizer() string {
 // renderProgressBar returns formatted progress bar with state/shuffle/loop indicators.
 // Matches the classic jammer format: state shuffle loop elapsed |bar| total  vol%
 func (m Model) renderProgressBar() string {
-	// State glyph: classic shows ❚❚ when PLAYING (pause icon = "you can pause")
-	//              and ▶  when PAUSED (play icon = "you can play")
-	state := "■ "
+	p := activePalette
+
+	// State glyph from palette (fallback to classic defaults).
+	playingLetter := p.PlayingLetter
+	if playingLetter == "" {
+		playingLetter = "❚❚"
+	}
+	pausedLetter := p.PausedLetter
+	if pausedLetter == "" {
+		pausedLetter = "▶ "
+	}
+	stoppedLetter := p.StoppedLetter
+	if stoppedLetter == "" {
+		stoppedLetter = "■ "
+	}
+
+	state := stoppedLetter
 	switch m.p.State() {
 	case player.StatePlaying:
-		state = "❚❚"
+		state = playingLetter
 	case player.StatePaused:
-		state = "▶ "
+		state = pausedLetter
 	case player.StateStopped:
-		state = "■ "
+		state = stoppedLetter
 	}
 
-	// Shuffle glyph (classic: ⇌  whether on or off, always shown)
-	shuffle := "⇌ "
+	// Shuffle glyph
+	shuffleLetter := p.ShuffleOnLetter
+	if shuffleLetter == "" {
+		shuffleLetter = "⇌ "
+	}
+	shuffleOffLetter := p.ShuffleOffLetter
+	if shuffleOffLetter == "" {
+		shuffleOffLetter = shuffleLetter
+	}
+	shuffleColor := p.ShuffleOnColor
+	shuffleOffColor := p.ShuffleOffColor
+	shuffleStr := ""
+	if m.p.IsShuffle() {
+		if shuffleColor != "" {
+			shuffleStr = lipgloss.NewStyle().Foreground(shuffleColor).Render(shuffleLetter)
+		} else {
+			shuffleStr = shuffleLetter
+		}
+	} else {
+		if shuffleOffColor != "" {
+			shuffleStr = lipgloss.NewStyle().Foreground(shuffleOffColor).Render(shuffleOffLetter)
+		} else {
+			shuffleStr = shuffleOffLetter
+		}
+	}
 
-	// Loop glyph (classic: " ↻  " for loop-all/off, " ⟳  " for loop-once)
-	loopGlyph := " ↻  "
+	// Loop glyph — three modes: all (↻), off (↻ same glyph), once (1)
+	loopAllLetter := p.LoopOnLetter
+	if loopAllLetter == "" {
+		loopAllLetter = " ⟳  "
+	}
+	loopOffLetter := p.LoopOffLetter
+	if loopOffLetter == "" {
+		loopOffLetter = " ↻  "
+	}
+	loopOnceLetter := p.LoopOnceLetter
+	if loopOnceLetter == "" {
+		loopOnceLetter = " 1  "
+	}
+	loopAllColor := p.LoopOnColor
+	loopOffColor := p.LoopOffColor
+	loopOnceColor := p.LoopOnceColor
+
+	renderLoopGlyph := func(letter string, color lipgloss.Color) string {
+		if color != "" {
+			return lipgloss.NewStyle().Foreground(color).Render(letter)
+		}
+		return letter
+	}
+
+	loopGlyph := ""
 	switch m.p.GetLoopMode() {
-	case 0: // all
-		loopGlyph = " ↻  "
-	case 1: // off
-		loopGlyph = " ↻  "
-	case 2: // one
-		loopGlyph = " ⟳  "
+	case player.LoopAll:
+		loopGlyph = renderLoopGlyph(loopAllLetter, loopAllColor)
+	case player.LoopOff:
+		loopGlyph = renderLoopGlyph(loopOffLetter, loopOffColor)
+	case player.LoopOne:
+		loopGlyph = renderLoopGlyph(loopOnceLetter, loopOnceColor)
 	}
-
 	elapsed := fmtTime(m.pos)
 	total := fmtTime(m.dur)
 
@@ -3717,16 +3917,25 @@ func (m Model) renderProgressBar() string {
 		filled = barLen
 	}
 
-	// Classic uses █ for filled and space for empty
-	bar := strings.Repeat("█", filled) + strings.Repeat(" ", barLen-filled)
-	vol := int(math.Round(float64(m.p.Volume()) * 100))
+	// Use themed timebar fill letter (fallback to █)
+	fillChar := p.TimebarLetter
+	if fillChar == "" {
+		fillChar = "█"
+	}
+	bar := strings.Repeat(fillChar, filled) + strings.Repeat(" ", barLen-filled)
+	barStyled := styleBar.Render("|") + styleBarFill.Render(bar) + styleBar.Render("|")
 
+	vol := int(math.Round(float64(m.p.Volume()) * 100))
 	volStr := fmt.Sprintf("%3d%%", vol)
 	if m.p.IsMuted() {
 		volStr = "MUTE"
+		volStr = styleVolume.Copy().Foreground(p.VolumeMutedColor).Render(volStr)
+	} else {
+		volStr = styleVolume.Render(volStr)
 	}
 
-	return fmt.Sprintf("%s%s%s %s |%s| %s  %s", state, shuffle, loopGlyph, elapsed, bar, total, volStr)
+	timeStr := styleBar.Render(elapsed) + " " + barStyled + " " + styleBar.Render(total)
+	return fmt.Sprintf("%s%s%s %s  %s", state, shuffleStr, loopGlyph, timeStr, volStr)
 }
 
 // ── Playlists view ────────────────────────────────────────────────────────────
@@ -3996,14 +4205,14 @@ func fetchRssCmd(url string) tea.Cmd {
 func (m Model) renderRssFeed() string {
 	var b strings.Builder
 	if m.rssLoading {
-		b.WriteString(styleTitle.Render("  RSS Feed") + "\n")
-		b.WriteString(styleHelp.Render("  Fetching…") + "\n")
+		b.WriteString(styleRssTitle.Render("  RSS Feed") + "\n")
+		b.WriteString(styleRssNormal.Render("  Fetching…") + "\n")
 		return b.String()
 	}
 	if m.rssErr != "" {
-		b.WriteString(styleTitle.Render("  RSS Feed — Error") + "\n")
+		b.WriteString(styleInputTitleErr.Render("  RSS Feed — Error") + "\n")
 		b.WriteString(styleErr.Render("  "+m.rssErr) + "\n")
-		b.WriteString(styleHelp.Render("  E/ESC: back") + "\n")
+		b.WriteString(styleRssNormal.Render("  E/ESC: back") + "\n")
 		return b.String()
 	}
 	if m.rssFeed == nil {
@@ -4014,7 +4223,7 @@ func (m Model) renderRssFeed() string {
 	if feed.Author != "" && feed.Author != "Unknown Author" {
 		header += " — " + feed.Author
 	}
-	b.WriteString(styleTitle.Render("  "+header) + "\n")
+	b.WriteString(styleRssTitle.Render("  "+header) + "\n")
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
 
 	visibleRows := m.height - 5
@@ -4030,11 +4239,11 @@ func (m Model) renderRssFeed() string {
 		if i == m.rssCursor {
 			b.WriteString(styleSelected.Render("> "+label) + "\n")
 		} else {
-			b.WriteString(styleNormal.Render("  "+label) + "\n")
+			b.WriteString(styleRssNormal.Render("  "+label) + "\n")
 		}
 	}
 	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
-	b.WriteString(styleHelp.Render(fmt.Sprintf("  ↑/↓: navigate  Enter: play  E/ESC: exit feed  (%d/%d)", m.rssCursor+1, len(feed.Items))) + "\n")
+	b.WriteString(styleRssNormal.Render(fmt.Sprintf("  ↑/↓: navigate  Enter: play  E/ESC: exit feed  (%d/%d)", m.rssCursor+1, len(feed.Items))) + "\n")
 	return b.String()
 }
 

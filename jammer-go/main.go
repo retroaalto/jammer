@@ -15,6 +15,7 @@ import (
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
+	"github.com/jooapa/jammer/jammer-go/internal/theme"
 	"github.com/jooapa/jammer/jammer-go/internal/ui"
 )
 
@@ -370,6 +371,9 @@ func main() {
 
 	// Load keybindings from KeyData.ini
 	kb := keybinds.New()
+
+	// Tell the theme package where to find custom .json theme files.
+	theme.SetThemesDir(filepath.Join(dirs.Data(), "themes"))
 
 	// Build Prefs from settings for the UI.
 	prefs := ui.Prefs{

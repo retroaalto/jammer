@@ -100,6 +100,8 @@ type TimeSection struct {
 	LoopOffLetter            string `json:"LoopOffLetter"`
 	LoopLetterOnColor        string `json:"LoopLetterOnColor"`
 	LoopOnLetter             string `json:"LoopOnLetter"`
+	LoopLetterOnceColor      string `json:"LoopLetterOnceColor"`
+	LoopOnceLetter           string `json:"LoopOnceLetter"`
 	TimeColor                string `json:"TimeColor"`
 	VolumeColorNotMuted      string `json:"VolumeColorNotMuted"`
 	VolumeColorMuted         string `json:"VolumeColorMuted"`
@@ -160,9 +162,16 @@ type InputBoxSection struct {
 }
 
 type VisualizerSection struct {
-	UnicodeMap   []string `json:"UnicodeMap"`
-	PlayingColor string   `json:"PlayingColor"`
-	PausedColor  string   `json:"PausedColor"`
+	UnicodeMap          []string `json:"UnicodeMap"`
+	PlayingColor        string   `json:"PlayingColor"`
+	PausedColor         string   `json:"PausedColor"`
+	// GradientColors defines 2+ color stops (low→high) for per-bar gradient
+	// coloring while playing. Empty = flat PlayingColor (classic behavior).
+	// Colors are Spectre.Console names or #RRGGBB hex strings.
+	GradientColors      []string `json:"GradientColors"`
+	// GradientPausedColors is the same but applied when paused.
+	// Empty = falls back to flat PausedColor.
+	GradientPausedColors []string `json:"GradientPausedColors"`
 }
 
 type RssSection struct {
@@ -231,6 +240,8 @@ type Palette struct {
 	LoopOffLetter         string
 	LoopOnColor           lipgloss.Color
 	LoopOnLetter          string
+	LoopOnceColor         lipgloss.Color
+	LoopOnceLetter        string
 
 	// ── Help screen ───────────────────────────────────────────────────────
 	HelpBorderColor      lipgloss.Color
@@ -265,9 +276,11 @@ type Palette struct {
 	InputTextError        lipgloss.Color
 
 	// ── Visualizer ────────────────────────────────────────────────────────
-	VizUnicodeMap   []string       // bar characters (low → high)
-	VizPlayingColor lipgloss.Color
-	VizPausedColor  lipgloss.Color
+	VizUnicodeMap        []string       // bar characters (low → high)
+	VizPlayingColor      lipgloss.Color // flat color when playing (used if no gradient)
+	VizPausedColor       lipgloss.Color // flat color when paused (used if no gradient)
+	VizGradient          []lipgloss.Color // per-bar gradient stops playing (low→high); nil = flat
+	VizGradientPaused    []lipgloss.Color // per-bar gradient stops paused; nil = flat
 
 	// ── RSS feed ──────────────────────────────────────────────────────────
 	RssBorderColor   lipgloss.Color
@@ -460,6 +473,8 @@ func defaultClassicTheme() ClassicTheme {
 			LoopOffLetter:         " ↻  ",
 			LoopLetterOnColor:     "green bold",
 			LoopOnLetter:          " ⟳  ",
+			LoopLetterOnceColor:   "yellow bold",
+			LoopOnceLetter:        " 1  ",
 			TimeColor:             "white",
 			VolumeColorNotMuted:   "white",
 			VolumeColorMuted:      "grey strikethrough bold",
@@ -514,9 +529,11 @@ func defaultClassicTheme() ClassicTheme {
 			MultiSelectMoreChoicesTextColor: "grey",
 		},
 		Visualizer: VisualizerSection{
-			UnicodeMap:   []string{" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"},
-			PlayingColor: "green",
-			PausedColor:  "grey",
+			UnicodeMap:          []string{" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"},
+			PlayingColor:        "green",
+			PausedColor:         "grey",
+			GradientColors:      []string{"#00FF00", "#FFFF00", "#FF0000"},
+			GradientPausedColors: []string{"#444444", "#888888"},
 		},
 		Rss: RssSection{
 			BorderColor:       RGB{255, 255, 255},
@@ -528,6 +545,28 @@ func defaultClassicTheme() ClassicTheme {
 			DetailBorderColor: RGB{255, 255, 255},
 		},
 	}
+}
+
+// parseGradientColors converts a slice of Spectre.Console color name or
+// "#RRGGBB" hex strings into lipgloss.Colors, skipping empty entries.
+// Returns nil if the input is empty or all entries are blank.
+func parseGradientColors(stops []string) []lipgloss.Color {
+	var out []lipgloss.Color
+	for _, s := range stops {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if strings.HasPrefix(s, "#") {
+			out = append(out, lipgloss.Color(s))
+		} else {
+			out = append(out, spectreToLipgloss(s))
+		}
+	}
+	if len(out) < 2 {
+		return nil // need at least 2 stops to form a gradient
+	}
+	return out
 }
 
 // ConvertClassic converts a ClassicTheme into a Palette ready for the UI renderer.
@@ -585,6 +624,8 @@ func ConvertClassic(ct ClassicTheme) Palette {
 		LoopOffLetter:    ct.Time.LoopOffLetter,
 		LoopOnColor:      sp(ct.Time.LoopLetterOnColor),
 		LoopOnLetter:     ct.Time.LoopOnLetter,
+		LoopOnceColor:    sp(ct.Time.LoopLetterOnceColor),
+		LoopOnceLetter:   ct.Time.LoopOnceLetter,
 
 		// Help
 		HelpBorderColor: ct.GeneralHelp.BorderColor.Lipgloss(),
@@ -619,9 +660,11 @@ func ConvertClassic(ct ClassicTheme) Palette {
 		InputTextError:   sp(ct.InputBox.InputTextColorIfError),
 
 		// Visualizer
-		VizUnicodeMap:   ct.Visualizer.UnicodeMap,
-		VizPlayingColor: sp(ct.Visualizer.PlayingColor),
-		VizPausedColor:  sp(ct.Visualizer.PausedColor),
+		VizUnicodeMap:      ct.Visualizer.UnicodeMap,
+		VizPlayingColor:    sp(ct.Visualizer.PlayingColor),
+		VizPausedColor:     sp(ct.Visualizer.PausedColor),
+		VizGradient:        parseGradientColors(ct.Visualizer.GradientColors),
+		VizGradientPaused:  parseGradientColors(ct.Visualizer.GradientPausedColors),
 
 		// RSS
 		RssBorderColor: ct.Rss.BorderColor.Lipgloss(),
@@ -682,6 +725,8 @@ func init() {
 	dracula.InputTitle = "#ff79c6"
 	dracula.VizPlayingColor = "#50fa7b"
 	dracula.VizPausedColor = "#6272a4"
+	dracula.VizGradient = []lipgloss.Color{"#50fa7b", "#f1fa8c", "#ff5555"}
+	dracula.VizGradientPaused = []lipgloss.Color{"#44475a", "#6272a4"}
 	dracula.RssBorderColor = "#6272a4"
 	dracula.RssTitle = "#ff79c6"
 	dracula.TabActive = "#ff79c6"
@@ -725,6 +770,8 @@ func init() {
 	nord.InputTitle = "#88c0d0"
 	nord.VizPlayingColor = "#a3be8c"
 	nord.VizPausedColor = "#4c566a"
+	nord.VizGradient = []lipgloss.Color{"#8fbcbb", "#a3be8c", "#ebcb8b", "#bf616a"}
+	nord.VizGradientPaused = []lipgloss.Color{"#3b4252", "#4c566a"}
 	nord.RssBorderColor = "#4c566a"
 	nord.RssTitle = "#88c0d0"
 	nord.TabActive = "#88c0d0"
@@ -768,6 +815,8 @@ func init() {
 	gruvbox.InputTitle = "#fabd2f"
 	gruvbox.VizPlayingColor = "#b8bb26"
 	gruvbox.VizPausedColor = "#665c54"
+	gruvbox.VizGradient = []lipgloss.Color{"#b8bb26", "#fabd2f", "#fe8019", "#fb4934"}
+	gruvbox.VizGradientPaused = []lipgloss.Color{"#3c3836", "#665c54"}
 	gruvbox.RssBorderColor = "#504945"
 	gruvbox.RssTitle = "#fabd2f"
 	gruvbox.TabActive = "#fabd2f"
@@ -927,6 +976,9 @@ func backfillClassicTheme(dst *ClassicTheme, src ClassicTheme) {
 	if dst.Time.LoopOnLetter == "" {
 		dst.Time.LoopOnLetter = src.Time.LoopOnLetter
 	}
+	if dst.Time.LoopOnceLetter == "" {
+		dst.Time.LoopOnceLetter = src.Time.LoopOnceLetter
+	}
 	if dst.Time.TimeColor == "" {
 		dst.Time.TimeColor = src.Time.TimeColor
 	}
@@ -987,6 +1039,8 @@ func backfillClassicTheme(dst *ClassicTheme, src ClassicTheme) {
 	if len(dst.Visualizer.UnicodeMap) == 0 {
 		dst.Visualizer.UnicodeMap = src.Visualizer.UnicodeMap
 	}
+	// Gradient fields are intentionally NOT backfilled from default — an empty
+	// GradientColors in a user theme means "use flat color", not "inherit default".
 	if dst.Rss.BorderStyle == "" {
 		dst.Rss.BorderStyle = src.Rss.BorderStyle
 	}
