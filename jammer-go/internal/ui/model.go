@@ -2053,8 +2053,6 @@ func dlSuffix(m Model, idx int) string {
 			return styleDLing.Render(fmt.Sprintf(" [%d%%]", pct))
 		case ds.err != nil:
 			return styleErr.Render(" [err]")
-		case ds.frac >= 1:
-			return stylePlaying.Render(" [ok]")
 		}
 	} else if !song.Downloaded() {
 		return styleNotDL.Render(" [dl]")
@@ -2296,8 +2294,6 @@ func (m Model) renderSongsAll() string {
 				suffix = styleDLing.Render(fmt.Sprintf(" [%d%%]", pct))
 			case ds.err != nil:
 				suffix = styleErr.Render(" [err]")
-			case ds.frac >= 1:
-				suffix = stylePlaying.Render(" [ok]")
 			}
 		} else if !song.Downloaded() {
 			suffix = styleNotDL.Render(" [dl]")
