@@ -41,9 +41,9 @@
 |---|---|---|---|
 | 14 | **Edit Keybindings view** | `Shift+E` | ✅ scrollable list, Enter to capture new key, auto-saves |
 | 15 | **Change Language view** | `Shift+L` | ⬜ stub (no i18n system yet) |
-| 16 | **Change Theme view** | `Shift+T` | ⬜ stub (no theme system yet) |
-| 17 | **Group menu** | `Ctrl+G` | ⬜ stub |
-| 18 | **RSS Feed support** | `E` (exit) | ⬜ stub |
+| 16 | **Change Theme view** | `Shift+T` | ✅ 4 built-in themes (default/dracula/gruvbox/nord), persisted to settings |
+| 17 | **Group menu** | `Ctrl+G` | ⬜ stub (unimplemented in classic too) |
+| 18 | **RSS Feed support** | `E` | ✅ fetch + parse, scrollable episode list, play enclosure URLs, E/ESC exits |
 
 ---
 
@@ -67,10 +67,10 @@
 
 | # | Setting | Key | Status |
 |---|---|---|---|
-| 28 | **Load Visualizer config** | `H` | ⬜ |
-| 29 | **Toggle Quick Search** auto-play | `P` | ⬜ needs search first |
-| 30 | **Toggle Quick Play From Search** | `R` | ⬜ needs search first |
-| 31 | **RSS Skip After Time** | `N`/`O` | ⬜ needs RSS first |
+| 28 | **Load Visualizer config** | `H` | ✅ (repurposed to Set Soundcloud Client ID; visualizer toggle is G) |
+| 29 | **Toggle Quick Search** auto-play | `P` | ✅ |
+| 30 | **Toggle Quick Play From Search** | `R` | ✅ |
+| 31 | **RSS Skip After Time** | `N`/`O` | ✅ |
 
 ---
 
@@ -78,11 +78,11 @@
 
 | # | Feature | Status |
 |---|---|---|
-| 32 | **`Stop` command** — verify Stop vs Pause semantics | ⬜ |
-| 33 | **AddSongToQueue** (`G` in playlist view) | ⬜ |
-| 34 | **Home/End navigation** in viewAll and viewPlaylists | ⬜ |
-| 35 | **Play cursor song** — verify Enter works in viewAll | ⬜ |
-| 36 | **Current state dump** (`F12`) | ⬜ |
+| 32 | **`Stop` command** — `Ctrl+S`; fixed `s` shadow over Shuffle | ✅ |
+| 33 | **AddSongToQueue** (`G` in playlist view) — stub status flash | ✅ |
+| 34 | **Home/End navigation** in viewAll and viewPlaylists | ✅ |
+| 35 | **Play cursor song** — Enter works in viewAll | ✅ |
+| 36 | **Current state dump** (`F12`) — removed (redundant with `I`) | ✅ |
 
 ---
 
@@ -91,8 +91,8 @@
 ```
 Phase 1 (1-3)    ✅ done
 Phase 2 (#4-13)  ✅ done
-Phase 4 (#19-27) → all in main.go, fast to batch
-Phase 6 (#32-36) → self-contained playback fixes
-Phase 3 (#14-18) → each needs a new view, larger effort
-Phase 5          → fill-in after bigger views are done
+Phase 4 (#19-27) ✅ done
+Phase 6 (#32-36) ✅ done
+Phase 3 (#15-18) → #16 ✅ #18 ✅; #15 (language) and #17 (group) remain stubs
+Phase 5 (#28-31) ✅ done
 ```

@@ -7,6 +7,9 @@
 //     Config() → $XDG_CONFIG_HOME/jammer (default ~/.config/jammer)
 //     State()  → $XDG_STATE_HOME/jammer  (default ~/.local/state/jammer)
 //     Cache()  → $XDG_CACHE_HOME/jammer  (default ~/.cache/jammer)
+//
+// Call ForceXDG() before any directory function to ignore ~/jammer/ and always
+// use XDG paths.
 package dirs
 
 import (
@@ -16,9 +19,9 @@ import (
 )
 
 var (
-	once       sync.Once
-	legacyDir  string // set to ~/jammer if it exists, otherwise ""
-	homeDir    string
+	once      sync.Once
+	legacyDir string // set to ~/jammer if it exists, otherwise ""
+	homeDir   string
 )
 
 func init() {
@@ -35,6 +38,13 @@ func resolve() {
 	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 		legacyDir = candidate
 	}
+}
+
+// ForceXDG disables legacy mode regardless of whether ~/jammer/ exists.
+// It must be called before any directory function (Config, Data, State, Cache).
+func ForceXDG() {
+	once.Do(resolve) // ensure homeDir is populated
+	legacyDir = ""
 }
 
 func xdgDir(envVar, defaultSub string) string {

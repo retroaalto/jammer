@@ -47,6 +47,7 @@ type settings struct {
 	TitleText                 string  `json:"titleText"`
 	TitleAnimationSpeed       int     `json:"titleAnimationSpeed"`
 	TitleAnimationInterval    int     `json:"titleAnimationInterval"`
+	Theme                     string  `json:"theme"`
 }
 
 const defaultSeekStep = 2
@@ -86,6 +87,14 @@ func saveBackend(path string, backendType int) {
 }
 
 func main() {
+	// Handle --xdg before anything that touches dirs (including jlog.Init).
+	for _, arg := range os.Args[1:] {
+		if arg == "--xdg" {
+			dirs.ForceXDG()
+			break
+		}
+	}
+
 	if err := jlog.Init(); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not open log file:", err)
 	}
@@ -108,7 +117,12 @@ func main() {
 	cfg := loadSettings(settingsPath)
 
 	// ── CLI-only commands (no TUI, exit after running) ──────────────────────
-	args := os.Args[1:]
+	args := make([]string, 0, len(os.Args)-1)
+	for _, a := range os.Args[1:] {
+		if a != "--xdg" {
+			args = append(args, a)
+		}
+	}
 	plsDir0 := filepath.Join(dirs.Data(), "playlists")
 	songsDir0 := filepath.Join(dirs.Data(), "songs")
 	for _, d := range []string{plsDir0, songsDir0} {
@@ -380,6 +394,7 @@ func main() {
 		TitleText:                 cfg.TitleText,
 		TitleAnimationSpeed:       cfg.TitleAnimationSpeed,
 		TitleAnimationInterval:    cfg.TitleAnimationInterval,
+		Theme:                     cfg.Theme,
 	}
 
 	var m ui.Model

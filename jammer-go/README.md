@@ -168,6 +168,35 @@ Missing or zero values fall back to the defaults listed above. Unknown fields ar
 
 ---
 
+## Visualizer.ini
+
+Controls the audio spectrum visualizer. Place this file in the jammer data directory (same folder as `settings.json`). If absent, jammer creates it with the defaults below the first time **H** (Load Visualizer) is pressed in the Settings screen.
+
+```ini
+[Audio Visualizer]
+; Refresh time in milliseconds
+RefreshTime = 35
+MinFrequency = 50
+MaxFrequency = 17000
+; Logarithmic multiplier for FFT values — higher = more sensitive
+FrequencyMultiplier = 900000000
+; Power exponent applied before the log step — tune alongside FrequencyMultiplier
+LogarithmicMultiplier = 4
+; Gradually shrink the visualizer when playback is paused
+PausingEffect = true
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `RefreshTime` | `35` | Visualizer tick interval in milliseconds |
+| `MinFrequency` | `50` | Lowest frequency (Hz) shown on the left edge of the bar display |
+| `MaxFrequency` | `17000` | Highest frequency (Hz) shown on the right edge |
+| `FrequencyMultiplier` | `900000000` | Linear multiplier applied inside the `log10` step |
+| `LogarithmicMultiplier` | `4` | Power exponent applied to raw FFT values before the log step |
+| `PausingEffect` | `true` | When `true`, bars decay toward zero while playback is paused |
+
+---
+
 ## KeyData.ini
 
 Custom keybindings file. If absent, all defaults below are used. Copy only the bindings you want to change — missing entries keep their defaults.

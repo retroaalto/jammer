@@ -112,7 +112,6 @@ func (kb *Keybinds) applyDefaults() {
 		"ToggleInfo":                "I",
 		"SearchInPlaylist":          "F3",
 		"SearchByAuthor":            "Shift + F3",
-		"CurrentState":              "F12",
 		"CommandHelpScreen":         "Tab",
 		"DeleteCurrentSong":         "Delete",
 		"HardDeleteCurrentSong":     "Shift + Delete",
@@ -136,6 +135,7 @@ func (kb *Keybinds) applyDefaults() {
 		"ExitRssFeed":               "E",
 		"BackEndChange":             "B",
 		"RenameSong":                "F2",
+		"Stop":                      "Ctrl + S",
 	}
 
 	for action, keyStr := range defaults {

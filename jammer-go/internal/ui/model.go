@@ -21,7 +21,9 @@ import (
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
+	"github.com/jooapa/jammer/jammer-go/internal/rss"
 	"github.com/jooapa/jammer/jammer-go/internal/tags"
+	"github.com/jooapa/jammer/jammer-go/internal/theme"
 )
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -49,6 +51,11 @@ type searchDoneMsg struct {
 	err     error
 }
 
+type rssFetchDoneMsg struct {
+	feed *rss.Feed
+	err  error
+}
+
 // ── Views ─────────────────────────────────────────────────────────────────────
 
 type viewKind int
@@ -70,6 +77,8 @@ const (
 	viewSearchQuery                   // online search query input (Phase 2 #5)
 	viewSearchResults                 // online search results list (Phase 2 #5)
 	viewEditKeybinds                  // edit keybindings view (Phase 3 #14)
+	viewChangeTheme                   // theme picker view (Phase 3 #16)
+	viewRssFeed                       // RSS feed episode list (Phase 3 #18)
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -127,8 +136,25 @@ var (
 			Underline(true)
 
 	styleTabInactive = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("241"))
+			Foreground(lipgloss.Color("241"))
 )
+
+// applyTheme rebuilds all global style variables from the given palette.
+func applyTheme(p theme.Palette) {
+	styleTitle = lipgloss.NewStyle().Foreground(p.Title).Bold(true)
+	styleSelected = lipgloss.NewStyle().Foreground(p.Selected).Background(p.SelectedBg).Bold(true)
+	styleNormal = lipgloss.NewStyle().Foreground(p.Normal)
+	stylePlaying = lipgloss.NewStyle().Foreground(p.Playing).Bold(true)
+	styleHelp = lipgloss.NewStyle().Foreground(p.Help)
+	styleBar = lipgloss.NewStyle().Foreground(p.Bar)
+	styleBarFill = lipgloss.NewStyle().Foreground(p.BarFill)
+	styleVolume = lipgloss.NewStyle().Foreground(p.Volume)
+	styleNotDL = lipgloss.NewStyle().Foreground(p.NotDL)
+	styleDLing = lipgloss.NewStyle().Foreground(p.Downloading)
+	styleErr = lipgloss.NewStyle().Foreground(p.Error)
+	styleTabActive = lipgloss.NewStyle().Foreground(p.Title).Bold(true).Underline(true)
+	styleTabInactive = lipgloss.NewStyle().Foreground(p.TabInactive)
+}
 
 // Precomputed gradient palette for the visualizer (green → yellow → red).
 var vizPalette = func() []lipgloss.Style {
@@ -151,6 +177,85 @@ var vizPalette = func() []lipgloss.Style {
 	}
 	return p
 }()
+
+// ── Visualizer config ─────────────────────────────────────────────────────────
+
+// VizConfig holds the settings read from Visualizer.ini.
+// All fields have built-in defaults that are used when the file is absent.
+type VizConfig struct {
+	RefreshTime          int     // tick interval in ms
+	MinFrequency         float64 // Hz — left edge of bar display
+	MaxFrequency         float64 // Hz — right edge of bar display
+	FrequencyMultiplier  float64 // linear multiplier inside log10 step
+	LogarithmicMultiplier float64 // power exponent applied to raw FFT values
+	PausingEffect        bool    // decay bars when paused
+}
+
+// defaultVizConfig returns the built-in defaults (matches Visualizer.ini defaults).
+func defaultVizConfig() VizConfig {
+	return VizConfig{
+		RefreshTime:          35,
+		MinFrequency:         50,
+		MaxFrequency:         17000,
+		FrequencyMultiplier:  900000000,
+		LogarithmicMultiplier: 4,
+		PausingEffect:        true,
+	}
+}
+
+// loadVizConfig reads Visualizer.ini from path and returns a VizConfig.
+// Any missing or unparseable key falls back to the built-in default.
+// If the file does not exist the full default config is returned silently.
+func loadVizConfig(path string) VizConfig {
+	cfg := defaultVizConfig()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg
+	}
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "[") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		// Strip inline comments.
+		if idx := strings.Index(val, ";"); idx >= 0 {
+			val = strings.TrimSpace(val[:idx])
+		}
+		switch key {
+		case "RefreshTime":
+			if v, err := strconv.Atoi(val); err == nil && v > 0 {
+				cfg.RefreshTime = v
+			}
+		case "MinFrequency":
+			if v, err := strconv.ParseFloat(val, 64); err == nil && v > 0 {
+				cfg.MinFrequency = v
+			}
+		case "MaxFrequency":
+			if v, err := strconv.ParseFloat(val, 64); err == nil && v > 0 {
+				cfg.MaxFrequency = v
+			}
+		case "FrequencyMultiplier":
+			if v, err := strconv.ParseFloat(val, 64); err == nil && v > 0 {
+				cfg.FrequencyMultiplier = v
+			}
+		case "LogarithmicMultiplier":
+			if v, err := strconv.ParseFloat(val, 64); err == nil && v > 0 {
+				cfg.LogarithmicMultiplier = v
+			}
+		case "PausingEffect":
+			cfg.PausingEffect = strings.ToLower(val) == "true"
+		}
+	}
+	jlog.Infof("vizconfig: loaded path=%q minFreq=%.0f maxFreq=%.0f logMult=%.2f freqMult=%.0f pausingEffect=%v",
+		path, cfg.MinFrequency, cfg.MaxFrequency, cfg.LogarithmicMultiplier, cfg.FrequencyMultiplier, cfg.PausingEffect)
+	return cfg
+}
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
@@ -177,6 +282,7 @@ type Prefs struct {
 	TitleText                 string
 	TitleAnimationSpeed       int // ms per scanner step (default 80)
 	TitleAnimationInterval    int // ms pause at each end before reversing (default 1000)
+	Theme                     string
 }
 
 type Model struct {
@@ -219,6 +325,7 @@ type Model struct {
 	vizBars    []float64 // current smoothed bar heights (0.0–1.0)
 	vizTargets []float64 // FFT target heights bars animate toward
 	vizRunning bool      // true while the 100ms viz tick is scheduled
+	vizCfg     VizConfig // settings loaded from Visualizer.ini
 
 	// playlists view
 	playlists []string // filenames (basename only) in plsDir
@@ -271,6 +378,18 @@ type Model struct {
 	kbEditCaptured string // detected key name (shown for confirmation)
 	kbEditKeys     []string // sorted list of action names for the editor
 
+	// Phase 3: theme picker
+	themeCursor int // cursor position in theme list
+
+	// Phase 3: RSS feed view
+	rssFeed        *rss.Feed  // currently loaded feed (nil = none)
+	rssCursor      int        // episode list cursor
+	rssOffset      int        // episode list scroll offset
+	rssLoading     bool       // true while fetching
+	rssErr         string     // last fetch error
+	rssOriginSongs []player.Song // songs to restore when exiting RSS view
+	rssOriginFile  string        // playlist file to restore
+
 	// Phase 2: status flash message (shown in progress bar area briefly)
 	statusMsg     string
 	statusMsgTime time.Time
@@ -284,6 +403,8 @@ func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekSte
 	if seekStep <= 0 {
 		seekStep = 2
 	}
+	// Apply theme before first render.
+	applyTheme(theme.Get(prefs.Theme))
 	// Determine initial view based on defaultView setting
 	initialView := viewDefault
 	if defaultView == "all" {
@@ -302,6 +423,7 @@ func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekSte
 		dlStates:     make(map[int]*dlState),
 		view:         initialView,
 		titleScanDir: 1,
+		vizCfg:       loadVizConfig(filepath.Join(dirs.Data(), "Visualizer.ini")),
 	}
 	m.reloadPlaylists()
 	if plsFile != "" {
@@ -323,8 +445,12 @@ func tick() tea.Cmd {
 	})
 }
 
-func vizTick() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+func (m *Model) vizTick() tea.Cmd {
+	ms := m.vizCfg.RefreshTime
+	if ms <= 0 {
+		ms = 100
+	}
+	return tea.Tick(time.Duration(ms)*time.Millisecond, func(t time.Time) tea.Msg {
 		return vizTickMsg(t)
 	})
 }
@@ -471,13 +597,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.view = viewSearchResults
 		return m, nil
 
-	case vizTickMsg:
-		if m.p.State() == player.StatePlaying {
-			nBars := m.vizNBars()
-			m.stepViz(nBars)
-			return m, vizTick()
+	case rssFetchDoneMsg:
+		m.rssLoading = false
+		if msg.err != nil {
+			m.rssErr = msg.err.Error()
+			m.rssLoading = false
+			jlog.Errorf("rss fetch failed: %v", msg.err)
+			m.setStatus("RSS error: " + msg.err.Error())
+			m.view = viewDefault
+			return m, nil
 		}
-		// Player stopped/paused — let the tick lapse; will be restarted on next play.
+		m.rssFeed = msg.feed
+		m.rssCursor = 0
+		m.rssOffset = 0
+		m.rssErr = ""
+		m.view = viewRssFeed
+		return m, nil
+
+	case vizTickMsg:
+		nBars := m.vizNBars()
+		if m.p.State() == player.StatePlaying || (m.vizRunning && nBars > 0 && len(m.vizBars) > 0) {
+			m.stepViz(nBars)
+			return m, m.vizTick()
+		}
+		// Player stopped and no bars to animate — let the tick lapse.
 		m.vizRunning = false
 
 	case titleTickMsg:
@@ -536,7 +679,7 @@ func (m *Model) startViz(nBars int) tea.Cmd {
 		return nil
 	}
 	m.vizRunning = true
-	return vizTick()
+	return m.vizTick()
 }
 
 // vizNBars returns the number of visualizer bars for the current terminal width.
@@ -556,10 +699,21 @@ func (m Model) vizNBars() int {
 
 func (m *Model) stepViz(nBars int) {
 	fft := m.p.FFTData() // 256 bins, or nil
+	isPlaying := m.p.State() == player.StatePlaying
 	if fft == nil || nBars < 1 {
 		// No data: decay bars toward zero.
 		for i := range m.vizBars {
 			m.vizBars[i] *= 0.7
+		}
+		return
+	}
+
+	// When paused: decay bars if PausingEffect=true, freeze them if false.
+	if !isPlaying {
+		if m.vizCfg.PausingEffect {
+			for i := range m.vizBars {
+				m.vizBars[i] *= 0.95
+			}
 		}
 		return
 	}
@@ -572,13 +726,9 @@ func (m *Model) stepViz(nBars int) {
 
 	// Map FFT bins into nBars groups using a logarithmic frequency scale.
 	// 512-point FFT at 44100 Hz → bin width ≈ 86 Hz.
-	// Log scale spans 80 Hz – 16000 Hz so bars cover roughly equal octaves,
-	// matching how human hearing perceives pitch.
-	const (
-		binWidth = 44100.0 / 512.0
-		fLow     = 80.0
-		fHigh    = 16000.0
-	)
+	const binWidth = 44100.0 / 512.0
+	fLow := m.vizCfg.MinFrequency
+	fHigh := m.vizCfg.MaxFrequency
 	logRatio := math.Log(fHigh / fLow)
 
 	for i := 0; i < nBars; i++ {
@@ -603,11 +753,10 @@ func (m *Model) stepViz(nBars int) {
 			sum += v
 		}
 		avg := float64(sum) / float64(hiBin-loBin)
-		// Power scaling + multiplier tuned for raw (unnormalized) FFT magnitudes.
-		avg = math.Pow(avg, 0.45) * 2.5
-		// Small rising gain for high-frequency compensation.
-		gain := 1.0 + 1.2*(float64(i)/float64(nBars-1))
-		avg *= gain
+		// Apply power exponent then log10 scale — mirrors the classic formula:
+		//   pow(fftValue, logMult) → log10(1 + value * freqMult)
+		avg = math.Pow(avg, m.vizCfg.LogarithmicMultiplier)
+		avg = math.Log10(1 + avg*m.vizCfg.FrequencyMultiplier)
 		if avg > 1 {
 			avg = 1
 		}
@@ -678,6 +827,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.view == viewEditKeybinds {
 		return m.handleEditKeybindsKey(msg)
 	}
+	if m.view == viewChangeTheme {
+		return m.handleChangeThemeKey(msg)
+	}
+	if m.view == viewRssFeed {
+		return m.handleRssFeedKey(msg)
+	}
 
 	// Quit
 	if m.kb.Is("Quit", keyStr) {
@@ -744,6 +899,18 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if keyStr == "home" {
+		m.scursor = 0
+		m.clampSongScroll()
+		return m, nil
+	}
+	if keyStr == "end" {
+		if n := m.filterLen(); n > 0 {
+			m.scursor = n - 1
+			m.clampSongScroll()
+		}
+		return m, nil
+	}
 
 	// Play/Pause
 	if m.kb.Is("PlayPause", keyStr) || keyStr == "space" || keyStr == "enter" {
@@ -774,7 +941,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Stop
-	if keyStr == "s" {
+	if m.kb.Is("Stop", keyStr) {
 		jlog.Infof("ui: stop")
 		m.p.Stop()
 		return m, nil
@@ -996,7 +1163,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Toggle info
-	if m.kb.Is("ToggleInfo", keyStr) || m.kb.Is("CurrentState", keyStr) {
+	if m.kb.Is("ToggleInfo", keyStr) {
 		m.modalIdx = m.playing
 		m.view = viewInfo
 		return m, nil
@@ -1117,16 +1284,47 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.kb.Is("ChangeTheme", keyStr) {
-		m.setStatus("Change theme: not yet implemented")
+		names := theme.Names()
+		m.themeCursor = 0
+		for i, n := range names {
+			if n == m.prefs.Theme {
+				m.themeCursor = i
+				break
+			}
+		}
+		m.view = viewChangeTheme
 		return m, nil
 	}
 	if m.kb.Is("GroupMenu", keyStr) {
 		m.setStatus("Group menu: not yet implemented")
 		return m, nil
 	}
-	if m.kb.Is("ExitRssFeed", keyStr) {
-		m.setStatus("RSS feed: not yet implemented")
+	if m.kb.Is("AddToGroup", keyStr) {
+		m.setStatus("Add to group: not yet implemented")
 		return m, nil
+	}
+	if m.kb.Is("ExitRssFeed", keyStr) {
+		// Determine which song's URL to use: cursor song if available, else playing
+		idx := m.playing
+		if m.scursor >= 0 && m.scursor < m.filterLen() {
+			_, idx = m.filterSong(m.scursor)
+		}
+		var feedURL string
+		if idx >= 0 && idx < len(m.songs) {
+			feedURL = m.songs[idx].URL
+		}
+		if feedURL == "" || !rss.IsURL(feedURL) {
+			m.setStatus("No RSS URL for selected song")
+			return m, nil
+		}
+		// Save current state so we can restore it on exit.
+		m.rssOriginSongs = m.p.Songs()
+		m.rssOriginFile = m.plsFile
+		m.rssLoading = true
+		m.rssErr = ""
+		m.rssFeed = nil
+		m.setStatus("Loading RSS feed…")
+		return m, fetchRssCmd(feedURL)
 	}
 
 	// #4 Play Song modal (Shift+P)
@@ -1224,6 +1422,14 @@ func (m Model) handlePlaylistKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		if m.pcursor < len(m.playlists)-1 {
 			m.pcursor++
+			m.clampPLScroll()
+		}
+	case "home":
+		m.pcursor = 0
+		m.clampPLScroll()
+	case "end":
+		if n := len(m.playlists); n > 0 {
+			m.pcursor = n - 1
 			m.clampPLScroll()
 		}
 	case "space", "enter":
@@ -1638,6 +1844,10 @@ func (m Model) View() tea.View {
 		b.WriteString(m.renderSearchResults())
 	case viewEditKeybinds:
 		b.WriteString(m.renderEditKeybinds())
+	case viewChangeTheme:
+		b.WriteString(m.renderChangeTheme())
+	case viewRssFeed:
+		b.WriteString(m.renderRssFeed())
 	case viewPlaylists:
 		// Playlists view: show song path in outer box header
 		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderPlaylists()))
@@ -2228,7 +2438,8 @@ func (m Model) renderSettings() string {
 		{"Toggle Media Buttons", boolStr(m.prefs.IsMediaButtons), "F To Toggle"},
 		// Page 2 (G-L)
 		{"Toggle Visualizer", boolStr(m.prefs.IsVisualizer), "G To Toggle Visualizer"},
-		{"Set Soundcloud Client ID", "", "H To Set Soundcloud Client ID"},
+		{"Load Visualizer", "", "H To Load Visualizer settings"},
+		{"Set Soundcloud Client ID", "", "I To Set Soundcloud Client ID"},
 		{"Fetch Client ID", "", "J To Fetch and set Soundcloud Client ID"},
 		{"Toggle Key Modifier Helpers", boolStr(m.prefs.ModifierKeyHelper), "K To Toggle Key Helpers (restart required)"},
 		{"Toggle Skip Errors", boolStr(m.prefs.IsIgnoreErrors), "L To Toggle Skip Errors"},
@@ -2366,7 +2577,6 @@ func (m Model) getHelpBindings() []struct {
 		"ToSongStart":            "Go to start",
 		"ToSongEnd":              "Go to end",
 		"ToggleInfo":             "Toggle info",
-		"CurrentState":           "Current state",
 		"RenameSong":             "Rename song",
 		"AddSongToPlaylist":      "Add song",
 		"PlaylistViewScrollup":   "Scroll up",
@@ -2533,13 +2743,17 @@ func (m Model) applySettingAction(idx int) Model {
 		m.modalInput = fmt.Sprintf("%d", int(m.prefs.ChangeVolumeBy*100))
 		m.view = viewSettingsInput
 		return m
-	case 7: // Set Soundcloud Client ID
+	case 7: // Load Visualizer — re-read Visualizer.ini
+		m.vizCfg = loadVizConfig(filepath.Join(dirs.Data(), "Visualizer.ini"))
+		m.setStatus("Visualizer config reloaded")
+		return m
+	case 8: // Set Soundcloud Client ID
 		m.settingsInputIdx = idx
 		m.settingsInputPrompt = "Enter Soundcloud Client ID:"
 		m.modalInput = m.prefs.ClientID
 		m.view = viewSettingsInput
 		return m
-	case 13: // Amount of time to skip Rss
+	case 14: // Amount of time to skip Rss
 		m.settingsInputIdx = idx
 		m.settingsInputPrompt = "Enter amount of time to skip Rss (number):"
 		m.modalInput = fmt.Sprintf("%d", m.prefs.RssSkipAfterTimeValue)
@@ -2553,19 +2767,19 @@ func (m Model) applySettingAction(idx int) Model {
 		m.prefs.IsMediaButtons = !m.prefs.IsMediaButtons
 	case 6: // Toggle Visualizer
 		m.prefs.IsVisualizer = !m.prefs.IsVisualizer
-	case 9: // Toggle Key Modifier Helpers
+	case 10: // Toggle Key Modifier Helpers
 		m.prefs.ModifierKeyHelper = !m.prefs.ModifierKeyHelper
-	case 10: // Toggle Skip Errors
+	case 11: // Toggle Skip Errors
 		m.prefs.IsIgnoreErrors = !m.prefs.IsIgnoreErrors
-	case 11: // Toggle Playlist Position
+	case 12: // Toggle Playlist Position
 		m.prefs.ShowPlaylistPosition = !m.prefs.ShowPlaylistPosition
-	case 12: // Skip Rss after some time
+	case 13: // Skip Rss after some time
 		m.prefs.RssSkipAfterTime = !m.prefs.RssSkipAfterTime
-	case 14: // Toggle Quick Search
+	case 15: // Toggle Quick Search
 		m.prefs.EnableQuickSearch = !m.prefs.EnableQuickSearch
-	case 15: // Favorite Explainer
+	case 16: // Favorite Explainer
 		m.prefs.FavoriteExplainer = !m.prefs.FavoriteExplainer
-	case 16: // Toggle Quick Play From Search
+	case 17: // Toggle Quick Play From Search
 		m.prefs.EnableQuickPlayFromSearch = !m.prefs.EnableQuickPlayFromSearch
 	case 18: // Search Result Count
 		m.settingsInputIdx = idx
@@ -3762,9 +3976,186 @@ func saveSettings(p Prefs) {
 	raw["favoriteExplainer"] = p.FavoriteExplainer
 	raw["EnableQuickPlayFromSearch"] = p.EnableQuickPlayFromSearch
 	raw["searchResultCount"] = p.SearchResultCount
+	raw["theme"] = p.Theme
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return
 	}
 	_ = os.WriteFile(p.SettingsPath, out, 0o644)
+}
+
+// ── RSS feed view (Phase 3 #18) ───────────────────────────────────────────────
+
+func fetchRssCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		feed, err := rss.Fetch(url)
+		return rssFetchDoneMsg{feed: feed, err: err}
+	}
+}
+
+func (m Model) renderRssFeed() string {
+	var b strings.Builder
+	if m.rssLoading {
+		b.WriteString(styleTitle.Render("  RSS Feed") + "\n")
+		b.WriteString(styleHelp.Render("  Fetching…") + "\n")
+		return b.String()
+	}
+	if m.rssErr != "" {
+		b.WriteString(styleTitle.Render("  RSS Feed — Error") + "\n")
+		b.WriteString(styleErr.Render("  "+m.rssErr) + "\n")
+		b.WriteString(styleHelp.Render("  E/ESC: back") + "\n")
+		return b.String()
+	}
+	if m.rssFeed == nil {
+		return ""
+	}
+	feed := m.rssFeed
+	header := feed.Title
+	if feed.Author != "" && feed.Author != "Unknown Author" {
+		header += " — " + feed.Author
+	}
+	b.WriteString(styleTitle.Render("  "+header) + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+
+	visibleRows := m.height - 5
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	for i := m.rssOffset; i < len(feed.Items) && i < m.rssOffset+visibleRows; i++ {
+		item := feed.Items[i]
+		label := fmt.Sprintf("%d. %s", i+1, item.Title)
+		if item.Author != "" && item.Author != feed.Author && item.Author != "Unknown Author" {
+			label += " [" + item.Author + "]"
+		}
+		if i == m.rssCursor {
+			b.WriteString(styleSelected.Render("> "+label) + "\n")
+		} else {
+			b.WriteString(styleNormal.Render("  "+label) + "\n")
+		}
+	}
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render(fmt.Sprintf("  ↑/↓: navigate  Enter: play  E/ESC: exit feed  (%d/%d)", m.rssCursor+1, len(feed.Items))) + "\n")
+	return b.String()
+}
+
+func (m Model) handleRssFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.rssFeed == nil {
+		m.view = viewDefault
+		return m, nil
+	}
+	items := m.rssFeed.Items
+	keyStr := msg.String()
+
+	switch {
+	case keyStr == "esc" || m.kb.Is("ExitRssFeed", keyStr):
+		// Restore original songs.
+		if m.rssOriginSongs != nil {
+			m.p.SetSongs(m.rssOriginSongs)
+			m.songs = m.p.Songs()
+			m.plsFile = m.rssOriginFile
+			m.rssOriginSongs = nil
+		}
+		m.rssFeed = nil
+		m.view = viewDefault
+	case keyStr == "up" || keyStr == "k":
+		if m.rssCursor > 0 {
+			m.rssCursor--
+			if m.rssCursor < m.rssOffset {
+				m.rssOffset = m.rssCursor
+			}
+		}
+	case keyStr == "down" || keyStr == "j":
+		if m.rssCursor < len(items)-1 {
+			m.rssCursor++
+			visibleRows := m.height - 5
+			if visibleRows < 1 {
+				visibleRows = 1
+			}
+			if m.rssCursor >= m.rssOffset+visibleRows {
+				m.rssOffset = m.rssCursor - visibleRows + 1
+			}
+		}
+	case keyStr == "home":
+		m.rssCursor = 0
+		m.rssOffset = 0
+	case keyStr == "end":
+		if len(items) > 0 {
+			m.rssCursor = len(items) - 1
+			visibleRows := m.height - 5
+			if visibleRows < 1 {
+				visibleRows = 1
+			}
+			if m.rssCursor >= visibleRows {
+				m.rssOffset = m.rssCursor - visibleRows + 1
+			}
+		}
+	case keyStr == "enter" || keyStr == " ":
+		if m.rssCursor < 0 || m.rssCursor >= len(items) {
+			break
+		}
+		item := items[m.rssCursor]
+		if item.URL == "" {
+			m.setStatus("No playable URL for this episode")
+			break
+		}
+		// Load the episode as a single-song playlist in the player.
+		// Clear plsFile so saves don't overwrite the origin playlist file.
+		entries := []playlist.Entry{{URL: item.URL, Title: item.Title, Author: item.Author}}
+		m.p.LoadPlaylist(entries)
+		m.songs = m.p.Songs()
+		m.plsFile = ""
+		m.playing = 0
+		m.scursor = 0
+		m.soffset = 0
+		m.dlStates = make(map[int]*dlState)
+		return m, tea.Batch(m.downloadIfNeeded(0), m.startViz(0))
+	}
+	return m, nil
+}
+
+func (m Model) renderChangeTheme() string {
+	var b strings.Builder
+	names := theme.Names()
+	b.WriteString(styleTitle.Render("  Change Theme") + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	for i, name := range names {
+		label := "  " + name
+		if i == m.themeCursor {
+			label = styleSelected.Render("> " + name)
+		} else if name == m.prefs.Theme {
+			label = stylePlaying.Render("  " + name + "  ✓")
+		} else {
+			label = styleNormal.Render(label)
+		}
+		b.WriteString(label + "\n")
+	}
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  ↑/↓: navigate  Enter: apply  ESC: cancel") + "\n")
+	return b.String()
+}
+
+func (m Model) handleChangeThemeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	names := theme.Names()
+	switch msg.String() {
+	case "esc":
+		m.view = viewDefault
+	case "up", "k":
+		if m.themeCursor > 0 {
+			m.themeCursor--
+		}
+	case "down", "j":
+		if m.themeCursor < len(names)-1 {
+			m.themeCursor++
+		}
+	case "enter", " ":
+		selected := names[m.themeCursor]
+		m.prefs.Theme = selected
+		applyTheme(theme.Get(selected))
+		if m.prefs.SettingsPath != "" {
+			saveSettings(m.prefs)
+		}
+		m.view = viewDefault
+		m.setStatus("Theme: " + selected)
+	}
+	return m, nil
 }
