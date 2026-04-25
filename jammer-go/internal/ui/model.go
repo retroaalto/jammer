@@ -18,6 +18,7 @@ import (
 	"github.com/jooapa/jammer/jammer-go/internal/dirs"
 	"github.com/jooapa/jammer/jammer-go/internal/downloader"
 	"github.com/jooapa/jammer/jammer-go/internal/keybinds"
+	"github.com/jooapa/jammer/jammer-go/internal/locale"
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
@@ -79,6 +80,7 @@ const (
 	viewEditKeybinds                  // edit keybindings view (Phase 3 #14)
 	viewChangeTheme                   // theme picker view (Phase 3 #16)
 	viewRssFeed                       // RSS feed episode list (Phase 3 #18)
+	viewChangeLanguage                // language picker
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -337,6 +339,7 @@ type Prefs struct {
 	TitleAnimationSpeed       int // ms per scanner step (default 80)
 	TitleAnimationInterval    int // ms pause at each end before reversing (default 1000)
 	Theme                     string
+	Language                  string // locale code, e.g. "en", "fi", "pt-br"
 }
 
 type Model struct {
@@ -443,6 +446,10 @@ type Model struct {
 	rssErr         string     // last fetch error
 	rssOriginSongs []player.Song // songs to restore when exiting RSS view
 	rssOriginFile  string        // playlist file to restore
+
+	// language picker
+	langCursor int
+	langList   []locale.LangInfo
 
 	// Phase 2: status flash message (shown in progress bar area briefly)
 	statusMsg     string
@@ -887,6 +894,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.view == viewRssFeed {
 		return m.handleRssFeedKey(msg)
+	}
+	if m.view == viewChangeLanguage {
+		return m.handleChangeLanguageKey(msg)
 	}
 
 	// Quit
@@ -1335,7 +1345,17 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Stubs for other Phase 3 features
 	if m.kb.Is("ChangeLanguage", keyStr) {
-		m.setStatus("Change language: not yet implemented")
+		m.langList = locale.AvailableLanguages()
+		// position cursor on current lang
+		m.langCursor = 0
+		cur := locale.CurrentLang()
+		for i, l := range m.langList {
+			if l.Code == cur {
+				m.langCursor = i
+				break
+			}
+		}
+		m.view = viewChangeLanguage
 		return m, nil
 	}
 	if m.kb.Is("ChangeTheme", keyStr) {
@@ -1903,6 +1923,8 @@ func (m Model) View() tea.View {
 		b.WriteString(m.renderChangeTheme())
 	case viewRssFeed:
 		b.WriteString(m.renderRssFeed())
+	case viewChangeLanguage:
+		b.WriteString(m.renderChangeLanguage())
 	case viewPlaylists:
 		// Playlists view: show song path in outer box header
 		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderPlaylists()))
@@ -2139,7 +2161,7 @@ func (m Model) renderSongsDefault() string {
 		currSfxW := lipgloss.Width(currSfx)
 		nextSfxW := lipgloss.Width(nextSfx)
 
-		prevLine := styleHelp.Render(formatSongLine("Previous", prevSong.DisplayTitle(), prevSong.Author, textW-prevSfxW)) + prevSfx
+		prevLine := styleHelp.Render(formatSongLine(locale.T("Player", "Previos"), prevSong.DisplayTitle(), prevSong.Author, textW-prevSfxW)) + prevSfx
 		var currLine string
 		if m.view == viewRename {
 			// Inline rename: show input field on current line, no author on right
@@ -2175,9 +2197,9 @@ func (m Model) renderSongsDefault() string {
 			}
 			currLine = stylePlaying.Render(label+before) + cursor + stylePlaying.Render(after)
 		} else {
-			currLine = stylePlaying.Render(formatSongLine("Now playing", currSong.DisplayTitle(), currSong.Author, textW-currSfxW)) + currSfx
+			currLine = stylePlaying.Render(formatSongLine(locale.T("Player", "Current"), currSong.DisplayTitle(), currSong.Author, textW-currSfxW)) + currSfx
 		}
-		nextLine := styleHelp.Render(formatSongLine("Next", nextSong.DisplayTitle(), nextSong.Author, textW-nextSfxW)) + nextSfx
+		nextLine := styleHelp.Render(formatSongLine(locale.T("Player", "Next"), nextSong.DisplayTitle(), nextSong.Author, textW-nextSfxW)) + nextSfx
 
 		boxContent := header + "\n" + sep + "\n" +
 			prevLine + "\n" +
@@ -2203,8 +2225,10 @@ func (m Model) renderSongsDefault() string {
 	helpKey, _ := m.kb.Get("Help")
 	settingsKey, _ := m.kb.Get("Settings")
 	playlistKey, _ := m.kb.Get("ShowHidePlaylist")
-	helpText := fmt.Sprintf("%s for help | %s for settings | %s for playlist",
-		helpKey, settingsKey, playlistKey)
+	helpText := fmt.Sprintf("%s %s | %s %s | %s %s",
+		helpKey, locale.T("Player", "ForHelp"),
+		settingsKey, locale.T("Help", "ForSettings"),
+		playlistKey, locale.T("Player", "ForPlaylist"))
 	helpBarBorderColor := activePalette.GeneralPlaylistBorderColor
 	if helpBarBorderColor == "" {
 		helpBarBorderColor = lipgloss.Color("61")
@@ -2269,8 +2293,8 @@ func (m Model) renderSongsAll() string {
 
 	header := styleTitle.Render(plsName)
 	sep := strings.Repeat("─", textW)
-	instr1 := styleHelp.Render(fmt.Sprintf("Move with %s, %s", scrollUpKey, scrollDownKey))
-	instr2 := styleHelp.Render(fmt.Sprintf("Play with %s. Delete with %s.", chooseKey, deleteKey))
+	instr1 := styleHelp.Render(fmt.Sprintf("%s %s, %s", locale.T("OutsideItems", "CurrPlaylistView"), scrollUpKey, scrollDownKey))
+	instr2 := styleHelp.Render(fmt.Sprintf("%s %s. %s %s.", locale.T("OutsideItems", "PlaySongWith"), chooseKey, locale.T("OutsideItems", "DeleteSongWith"), deleteKey))
 
 	var songLines strings.Builder
 	total := m.filterLen()
@@ -2342,8 +2366,10 @@ func (m Model) renderSongsAll() string {
 	helpKey, _ := m.kb.Get("Help")
 	settingsKey, _ := m.kb.Get("Settings")
 	playlistKey, _ := m.kb.Get("ShowHidePlaylist")
-	helpText := fmt.Sprintf("%s for help | %s for settings | %s for playlist",
-		helpKey, settingsKey, playlistKey)
+	helpText := fmt.Sprintf("%s %s | %s %s | %s %s",
+		helpKey, locale.T("Player", "ForHelp"),
+		settingsKey, locale.T("Help", "ForSettings"),
+		playlistKey, locale.T("Player", "ForPlaylist"))
 	allHelpBarBorderColor := activePalette.WholePlaylistBorderColor
 	if allHelpBarBorderColor == "" {
 		allHelpBarBorderColor = lipgloss.Color("61")
@@ -2429,7 +2455,7 @@ func (m Model) renderHelp() string {
 	var inner strings.Builder
 
 	// Header row
-	inner.WriteString(styleHelpHeader.Render(row("Controls", "Description", "ModControls", fmt.Sprintf("Description (%d/%d)", page+1, totalPages))) + "\n")
+	inner.WriteString(styleHelpHeader.Render(row(locale.T("Help", "Controls"), locale.T("Help", "Description"), locale.T("Help", "ModControls"), fmt.Sprintf("%s (%d/%d)", locale.T("Help", "Description"), page+1, totalPages))) + "\n")
 	inner.WriteString(styleHelpControl.Render(sepRow) + "\n")
 
 	// Item rows (pairs)
@@ -2497,28 +2523,28 @@ func (m Model) renderSettings() string {
 	}
 	allItems := []settingItem{
 		// Page 1 (A-F)
-		{"Forward seconds", fwdSec, "A To Change"},
-		{"Rewind seconds", rwdSec, "B To Change"},
-		{"Change Volume By", volBy, "C To Change"},
-		{"Playlist Auto Save", boolStr(m.prefs.IsAutoSave), "D To Toggle"},
+		{locale.T("Settings", "Forwardseconds"), fwdSec, "A " + locale.T("Settings", "ToChange")},
+		{locale.T("Settings", "Rewindseconds"), rwdSec, "B " + locale.T("Settings", "ToChange")},
+		{locale.T("Settings", "ChangeVolumeBy"), volBy, "C " + locale.T("Settings", "ToChange")},
+		{locale.T("Settings", "AutoSave"), boolStr(m.prefs.IsAutoSave), "D " + locale.T("Settings", "ToToggle")},
 		{"Load Effects", "", "E To Load Effects settings"},
-		{"Toggle Media Buttons", boolStr(m.prefs.IsMediaButtons), "F To Toggle"},
+		{"Toggle Media Buttons", boolStr(m.prefs.IsMediaButtons), "F " + locale.T("Settings", "ToToggle")},
 		// Page 2 (G-L)
 		{"Toggle Visualizer", boolStr(m.prefs.IsVisualizer), "G To Toggle Visualizer"},
 		{"Load Visualizer", "", "H To Load Visualizer settings"},
 		{"Set Soundcloud Client ID", "", "I To Set Soundcloud Client ID"},
 		{"Fetch Client ID", "", "J To Fetch and set Soundcloud Client ID"},
 		{"Toggle Key Modifier Helpers", boolStr(m.prefs.ModifierKeyHelper), "K To Toggle Key Helpers (restart required)"},
-		{"Toggle Skip Errors", boolStr(m.prefs.IsIgnoreErrors), "L To Toggle Skip Errors"},
+		{"Toggle Skip Errors", boolStr(m.prefs.IsIgnoreErrors), "L " + locale.T("Settings", "ToToggle")},
 		// Page 3 (M-R)
-		{"Toggle Playlist Position", boolStr(m.prefs.ShowPlaylistPosition), "M To Toggle Playlist Position"},
-		{"Skip Rss after some time", boolStr(m.prefs.RssSkipAfterTime), "N To Toggle Skip Rss after some time"},
-		{"Amount of time to skip Rss", rssVal, "O To Set Amount of time to skip Rss"},
-		{"Toggle Quick Search", boolStr(m.prefs.EnableQuickSearch), "P To Toggle (will autoplay search result if exact match)"},
-		{"Favorite Explainer", boolStr(m.prefs.FavoriteExplainer), "Q To Toggle (show explainer when favoriting a song)"},
-		{"Toggle Quick Play From Search", boolStr(m.prefs.EnableQuickPlayFromSearch), "R To Toggle (automatically play the first search result when searching)"},
+		{"Toggle Playlist Position", boolStr(m.prefs.ShowPlaylistPosition), "M " + locale.T("Settings", "ToToggle")},
+		{"Skip Rss after some time", boolStr(m.prefs.RssSkipAfterTime), "N " + locale.T("Settings", "ToToggle")},
+		{"Amount of time to skip Rss", rssVal, "O " + locale.T("Settings", "ToChange")},
+		{"Toggle Quick Search", boolStr(m.prefs.EnableQuickSearch), "P " + locale.T("Settings", "ToToggle") + " (will autoplay search result if exact match)"},
+		{"Favorite Explainer", boolStr(m.prefs.FavoriteExplainer), "Q " + locale.T("Settings", "ToToggle") + " (show explainer when favoriting a song)"},
+		{"Toggle Quick Play From Search", boolStr(m.prefs.EnableQuickPlayFromSearch), "R " + locale.T("Settings", "ToToggle") + " (automatically play the first search result when searching)"},
 		// Page 4 (S)
-		{"Search Result Count", fmt.Sprintf("%d", m.prefs.SearchResultCount), "S To Change (number of online search results, default 10)"},
+		{"Search Result Count", fmt.Sprintf("%d", m.prefs.SearchResultCount), "S " + locale.T("Settings", "ToChange") + " (number of online search results, default 10)"},
 	}
 
 	const itemsPerPage = 6
@@ -2565,7 +2591,7 @@ func (m Model) renderSettings() string {
 	pageLabel := fmt.Sprintf("%d/%d", page+1, totalPages)
 
 	var inner strings.Builder
-	inner.WriteString(styleSettingsHeader.Render(row("Settings", "Value", "Change Value ("+pageLabel+")")) + "\n")
+	inner.WriteString(styleSettingsHeader.Render(row(locale.T("Settings", "Settings"), locale.T("Settings", "Value"), locale.T("Settings", "ChangeValue")+" ("+pageLabel+")")) + "\n")
 	inner.WriteString(styleSettingsHint.Render(sepRow) + "\n")
 
 	for i, s := range pageItems {
@@ -2614,41 +2640,62 @@ func (m Model) getHelpBindings() []struct {
 } {
 	allBindings := m.kb.GetAll()
 
-	// Map of action → description
+	// Map of action → description (localised via EditKeysTexts section)
 	descriptions := map[string]string{
-		"PlayPause":              "Play/Pause",
-		"NextSong":               "Next song",
-		"PreviousSong":           "Previous song",
-		"Quit":                   "Quit",
-		"Help":                   "Show help",
-		"Settings":               "Settings",
-		"ToMainMenu":             "Main menu",
-		"Forward5s":              "Seek forward",
-		"Backwards5s":            "Seek backward",
-		"VolumeUp":               "Volume up",
-		"VolumeDown":             "Volume down",
-		"VolumeUpByOne":          "Volume +1%",
-		"VolumeDownByOne":        "Volume -1%",
-		"Mute":                   "Toggle mute",
-		"Shuffle":                "Shuffle",
-		"PlayRandomSong":         "Random song",
-		"Loop":                   "Loop mode",
-		"ShowHidePlaylist":       "Toggle playlist view",
-		"ListAllPlaylists":       "All playlists",
-		"PlayOtherPlaylist":      "Other playlist",
-		"DeleteCurrentSong":      "Delete song",
-		"HardDeleteCurrentSong":  "Delete from disk",
-		"RedownloadCurrentSong":  "Redownload",
-		"Search":                 "Search",
-		"SearchInPlaylist":       "Search in playlist",
-		"ToSongStart":            "Go to start",
-		"ToSongEnd":              "Go to end",
-		"ToggleInfo":             "Toggle info",
-		"RenameSong":             "Rename song",
-		"AddSongToPlaylist":      "Add song",
-		"PlaylistViewScrollup":   "Scroll up",
-		"PlaylistViewScrolldown": "Scroll down",
-		"CommandHelpScreen":      "Keyboard help",
+		"PlayPause":              locale.T("EditKeysTexts", "PlayPause"),
+		"NextSong":               locale.T("EditKeysTexts", "NextSong"),
+		"PreviousSong":           locale.T("EditKeysTexts", "PreviousSong"),
+		"Quit":                   locale.T("EditKeysTexts", "Quit"),
+		"Help":                   locale.T("EditKeysTexts", "Help"),
+		"Settings":               locale.T("EditKeysTexts", "Settings"),
+		"ToMainMenu":             locale.T("EditKeysTexts", "ToMainMenu"),
+		"Forward5s":              locale.T("EditKeysTexts", "Forward5s"),
+		"Backwards5s":            locale.T("EditKeysTexts", "Backwards5s"),
+		"VolumeUp":               locale.T("EditKeysTexts", "VolumeUp"),
+		"VolumeDown":             locale.T("EditKeysTexts", "VolumeDown"),
+		"VolumeUpByOne":          locale.T("EditKeysTexts", "VolumeUpByOne"),
+		"VolumeDownByOne":        locale.T("EditKeysTexts", "VolumeDownByOne"),
+		"Mute":                   locale.T("EditKeysTexts", "Mute"),
+		"Shuffle":                locale.T("EditKeysTexts", "Shuffle"),
+		"PlayRandomSong":         locale.T("EditKeysTexts", "PlayRandomSong"),
+		"Loop":                   locale.T("EditKeysTexts", "Loop"),
+		"ShowHidePlaylist":       locale.T("EditKeysTexts", "ShowHidePlaylist"),
+		"ListAllPlaylists":       locale.T("EditKeysTexts", "ListAllPlaylists"),
+		"PlayOtherPlaylist":      locale.T("EditKeysTexts", "PlayOtherPlaylist"),
+		"DeleteCurrentSong":      locale.T("EditKeysTexts", "DeleteCurrentSong"),
+		"HardDeleteCurrentSong":  locale.T("EditKeysTexts", "HardDeleteCurrentSong"),
+		"RedownloadCurrentSong":  locale.T("EditKeysTexts", "RedownloadCurrentSong"),
+		"Search":                 locale.T("EditKeysTexts", "Search"),
+		"SearchInPlaylist":       locale.T("EditKeysTexts", "SearchInPlaylist"),
+		"ToSongStart":            locale.T("EditKeysTexts", "ToSongStart"),
+		"ToSongEnd":              locale.T("EditKeysTexts", "ToSongEnd"),
+		"ToggleInfo":             locale.T("EditKeysTexts", "ToggleInfo"),
+		"RenameSong":             locale.T("EditKeysTexts", "RenameSong"),
+		"AddSongToPlaylist":      locale.T("EditKeysTexts", "AddSongToPlaylist"),
+		"PlaylistViewScrollup":   locale.T("EditKeysTexts", "PlaylistViewScrollup"),
+		"PlaylistViewScrolldown": locale.T("EditKeysTexts", "PlaylistViewScrolldown"),
+		"CommandHelpScreen":      locale.T("EditKeysTexts", "CommandHelpScreen"),
+		// additional actions
+		"AddCurrentSongToFavorites": locale.T("EditKeysTexts", "AddCurrentSongToFavorites"),
+		"ShowSongsInPlaylists":      locale.T("EditKeysTexts", "ShowSongsInPlaylists"),
+		"EditKeybindings":           locale.T("EditKeysTexts", "EditKeybindings"),
+		"ChangeLanguage":            locale.T("EditKeysTexts", "ChangeLanguage"),
+		"ChangeTheme":               locale.T("EditKeysTexts", "ChangeTheme"),
+		"BackEndChange":             locale.T("EditKeysTexts", "BackEndChange"),
+		"SearchByAuthor":            locale.T("EditKeysTexts", "SearchByAuthor"),
+		"AddSongToQueue":            locale.T("EditKeysTexts", "AddSongToQueue"),
+		"ShowLog":                   locale.T("EditKeysTexts", "ShowLog"),
+		"ToggleMediaButtons":        locale.T("EditKeysTexts", "ToggleMediaButtons"),
+		"ToggleVisualizer":          locale.T("EditKeysTexts", "ToggleVisualizer"),
+		"ExitRssFeed":               locale.T("EditKeysTexts", "ExitRssFeed"),
+		"ChangeSoundFont":           locale.T("EditKeysTexts", "ChangeSoundFont"),
+		"SaveAsPlaylist":            locale.T("EditKeysTexts", "SaveAsPlaylist"),
+		"SaveCurrentPlaylist":       locale.T("EditKeysTexts", "SaveCurrentPlaylist"),
+		"ShufflePlaylist":           locale.T("EditKeysTexts", "ShufflePlaylist"),
+		"PlaySong":                  locale.T("EditKeysTexts", "PlaySong"),
+		"Enter":                     locale.T("EditKeysTexts", "Enter"),
+		"AddToGroup":                "Add to group",
+		"GroupMenu":                 "Group menu",
 	}
 
 	var result []struct {
@@ -4183,6 +4230,7 @@ func saveSettings(p Prefs) {
 	raw["EnableQuickPlayFromSearch"] = p.EnableQuickPlayFromSearch
 	raw["searchResultCount"] = p.SearchResultCount
 	raw["theme"] = p.Theme
+	raw["language"] = p.Language
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return
@@ -4340,8 +4388,7 @@ func (m Model) renderChangeTheme() string {
 	return b.String()
 }
 
-func (m Model) handleChangeThemeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	names := theme.Names()
+func (m Model) handleChangeThemeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {	names := theme.Names()
 	switch msg.String() {
 	case "esc":
 		m.view = viewDefault
@@ -4362,6 +4409,64 @@ func (m Model) handleChangeThemeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewDefault
 		m.setStatus("Theme: " + selected)
+	}
+	return m, nil
+}
+
+// ── Language picker (Phase 2) ─────────────────────────────────────────────────
+
+func (m Model) renderChangeLanguage() string {
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("  Change Language") + "\n")
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	cur := locale.CurrentLang()
+	for i, l := range m.langList {
+		display := l.Language
+		if l.Country != "" {
+			display += " (" + l.Country + ")"
+		}
+		var label string
+		if i == m.langCursor {
+			label = styleSelected.Render("> " + display)
+		} else if l.Code == cur {
+			label = stylePlaying.Render("  " + display + "  ✓")
+		} else {
+			label = styleNormal.Render("  " + display)
+		}
+		b.WriteString(label + "\n")
+	}
+	b.WriteString(strings.Repeat("─", m.width-2) + "\n")
+	b.WriteString(styleHelp.Render("  ↑/↓: navigate  Enter: apply  ESC: cancel") + "\n")
+	return b.String()
+}
+
+func (m Model) handleChangeLanguageKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.view = viewDefault
+	case "up", "k":
+		if m.langCursor > 0 {
+			m.langCursor--
+		}
+	case "down", "j":
+		if m.langCursor < len(m.langList)-1 {
+			m.langCursor++
+		}
+	case "enter", " ":
+		if len(m.langList) == 0 {
+			break
+		}
+		selected := m.langList[m.langCursor]
+		if err := locale.Load(selected.Code); err != nil {
+			m.setStatus("Error loading language: " + err.Error())
+			break
+		}
+		m.prefs.Language = selected.Code
+		if m.prefs.SettingsPath != "" {
+			saveSettings(m.prefs)
+		}
+		m.view = viewDefault
+		m.setStatus("Language: " + selected.Language)
 	}
 	return m, nil
 }

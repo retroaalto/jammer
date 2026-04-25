@@ -12,6 +12,7 @@ import (
 	"github.com/jooapa/jammer/jammer-go/internal/audio"
 	"github.com/jooapa/jammer/jammer-go/internal/dirs"
 	"github.com/jooapa/jammer/jammer-go/internal/keybinds"
+	"github.com/jooapa/jammer/jammer-go/internal/locale"
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/player"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
@@ -49,6 +50,7 @@ type settings struct {
 	TitleAnimationSpeed       int     `json:"titleAnimationSpeed"`
 	TitleAnimationInterval    int     `json:"titleAnimationInterval"`
 	Theme                     string  `json:"theme"`
+	Language                  string  `json:"language"`
 }
 
 const defaultSeekStep = 2
@@ -116,6 +118,12 @@ func main() {
 
 	settingsPath := filepath.Join(dirs.Config(), "settings.json")
 	cfg := loadSettings(settingsPath)
+
+	// Load locale (falls back to English if language is empty or unknown).
+	if err := locale.Load(cfg.Language); err != nil {
+		jlog.Infof("locale.Load(%q): %v — falling back to English", cfg.Language, err)
+	}
+	jlog.Infof("locale: %s", locale.CurrentLang())
 
 	// ── CLI-only commands (no TUI, exit after running) ──────────────────────
 	args := make([]string, 0, len(os.Args)-1)
@@ -399,6 +407,7 @@ func main() {
 		TitleAnimationSpeed:       cfg.TitleAnimationSpeed,
 		TitleAnimationInterval:    cfg.TitleAnimationInterval,
 		Theme:                     cfg.Theme,
+		Language:                  cfg.Language,
 	}
 
 	var m ui.Model
