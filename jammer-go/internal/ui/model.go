@@ -3865,11 +3865,11 @@ func (m Model) renderProgressBar() string {
 	}
 	pausedLetter := p.PausedLetter
 	if pausedLetter == "" {
-		pausedLetter = "▶ "
+		pausedLetter = "▶"
 	}
 	stoppedLetter := p.StoppedLetter
 	if stoppedLetter == "" {
-		stoppedLetter = "■ "
+		stoppedLetter = "■"
 	}
 
 	state := stoppedLetter
@@ -3885,7 +3885,7 @@ func (m Model) renderProgressBar() string {
 	// Shuffle glyph
 	shuffleLetter := p.ShuffleOnLetter
 	if shuffleLetter == "" {
-		shuffleLetter = "⇌ "
+		shuffleLetter = "⇌"
 	}
 	shuffleOffLetter := p.ShuffleOffLetter
 	if shuffleOffLetter == "" {
@@ -3911,15 +3911,15 @@ func (m Model) renderProgressBar() string {
 	// Loop glyph — three modes: all (↻), off (↻ same glyph), once (1)
 	loopAllLetter := p.LoopOnLetter
 	if loopAllLetter == "" {
-		loopAllLetter = " ⟳  "
+		loopAllLetter = "⟳"
 	}
 	loopOffLetter := p.LoopOffLetter
 	if loopOffLetter == "" {
-		loopOffLetter = " ↻  "
+		loopOffLetter = "↻"
 	}
 	loopOnceLetter := p.LoopOnceLetter
 	if loopOnceLetter == "" {
-		loopOnceLetter = " 1  "
+		loopOnceLetter = "1"
 	}
 	loopAllColor := p.LoopOnColor
 	loopOffColor := p.LoopOffColor
@@ -3945,8 +3945,8 @@ func (m Model) renderProgressBar() string {
 	total := fmtTime(m.dur)
 
 	// Inner box text width: Width(boxW) + Padding(0,1) → inner text = boxW - 2
-	// Format: state(2) + shuffle(2) + loop(4) + elapsed(~5) + " |"(2) + bar(N) + "| "(2) + total(~5) + "   "(3) + vol(4)
-	// Fixed ≈ 2+2+4+5+2+2+5+3+4 = 29 chars → use textW - 29
+	// Format: state(2) + sp(1) + shuffle(1) + sp(1) + loop(1) + sp(2) + elapsed(~5) + " |"(2) + bar(N) + "| "(2) + total(~5) + "   "(3) + vol(4)
+	// Fixed ≈ 2+1+1+1+1+2+5+2+2+5+3+4 = 29 chars → use textW - 29
 	textW := m.songBoxTextWidth()
 	barLen := textW - 29
 	if barLen < 6 {
@@ -3979,7 +3979,7 @@ func (m Model) renderProgressBar() string {
 	}
 
 	timeStr := styleBar.Render(elapsed) + " " + barStyled + " " + styleBar.Render(total)
-	return fmt.Sprintf("%s%s%s %s  %s", state, shuffleStr, loopGlyph, timeStr, volStr)
+	return fmt.Sprintf("%s  %s  %s   %s  %s", state, shuffleStr, loopGlyph, timeStr, volStr)
 }
 
 // ── Playlists view ────────────────────────────────────────────────────────────
