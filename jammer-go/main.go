@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -286,9 +288,10 @@ func main() {
 		}
 	}
 
-	// Parse flags: -p <playlist>  -b (use BASS backend)  -hm/--home (songs folder)
+	// Parse flags: -p <playlist>  -b (use BASS backend)  -hm/--home (songs folder)  --pprof [addr]
 	playlistFlag := ""
 	bassFlag := false
+	pprofAddr := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-p":
@@ -301,7 +304,25 @@ func main() {
 		case "-hm", "--home":
 			// Explicitly play songs folder (default behaviour).
 			playlistFlag = ""
+		case "--pprof":
+			// Optional address argument; default to localhost:6060.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				pprofAddr = args[i]
+			} else {
+				pprofAddr = "127.0.0.1:6060"
+			}
 		}
+	}
+
+	// Start pprof HTTP server if requested.
+	if pprofAddr != "" {
+		go func() {
+			jlog.Infof("pprof server listening on http://%s/debug/pprof/", pprofAddr)
+			if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+				jlog.Errorf("pprof server: %v", err)
+			}
+		}()
 	}
 
 	// Determine backend: -b flag overrides settings.json for this session only.
