@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	jlog "github.com/jooapa/jammer/jammer-go/internal/log"
 	"github.com/jooapa/jammer/jammer-go/internal/playlist"
@@ -339,31 +341,68 @@ func downloadYouTube(ctx context.Context, url, songsDir string, progress chan<- 
 	}
 
 	totalBytes := chosen.ContentLength
-	written := int64(0)
+
+	// Track bytes written atomically so a ticker goroutine can report progress
+	// independently of the chunk-boundary bursts from the YouTube library.
+	var written atomic.Int64
+
+	// Ticker: send progress updates every 200ms while download is running.
+	stopTicker := make(chan struct{})
+	tickerDone := make(chan struct{})
+	go func() {
+		defer close(tickerDone)
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		pulse := 0.05
+		for {
+			select {
+			case <-ticker.C:
+				w := written.Load()
+				if totalBytes > 0 {
+					send(0.05+0.8*float64(w)/float64(totalBytes), "downloading...")
+				} else {
+					pulse += 0.01
+					if pulse > 0.80 {
+						pulse = 0.80
+					}
+					send(pulse, "downloading...")
+				}
+			case <-stopTicker:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	buf := make([]byte, 32*1024)
+	var copyErr error
 	for {
 		n, rerr := stream.Read(buf)
 		if n > 0 {
 			if _, werr := tmpF.Write(buf[:n]); werr != nil {
-				tmpF.Close()
-				os.Remove(tmpPath)
-				return "", meta, werr
+				copyErr = werr
+				break
 			}
-			written += int64(n)
-			if totalBytes > 0 {
-				send(0.05+0.8*float64(written)/float64(totalBytes), "downloading...")
-			}
+			written.Add(int64(n))
 		}
 		if rerr == io.EOF {
 			break
 		}
 		if rerr != nil {
-			tmpF.Close()
-			os.Remove(tmpPath)
-			return "", meta, rerr
+			copyErr = rerr
+			break
 		}
 	}
+
+	close(stopTicker)
+	<-tickerDone
 	tmpF.Close()
+
+	if copyErr != nil {
+		os.Remove(tmpPath)
+		return "", meta, copyErr
+	}
 
 	// Convert to ogg with ffmpeg if needed
 	if ext != ".ogg" {
