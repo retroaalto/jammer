@@ -1835,20 +1835,22 @@ func (m *Model) clampPLScroll() {
 }
 
 func (m Model) songListHeight() int {
-	// Different overhead for different views.
-	// renderSongsDefault: top 3-song box (border + padding) + help bar (3) + visualizer (1) + progress bar (3) ≈ 14 lines
-	// renderSongsAll: same but with full list box overhead is higher. The comment in renderSongsAll
-	//   says: outer(3+1) + inner border(2) + header+sep+2 instr(4) + help bar(3) + viz(1) + prog(3) = 17
-	reserved := 14
-	if m.view == viewAll {
-		reserved = 17
+	if m.view != viewAll {
+		// Default view doesn't have a scrollable list; return a safe value.
+		return 4
 	}
+	// For viewAll: outer borders(2) + title(0/2) + list box overhead(6) +
+	// help bar(3) + bottom controls(4) + filter(0/1)
+	reserved := 15
 	if m.filter != "" || m.filtering {
 		reserved++ // filter prompt line
 	}
+	if m.prefs.ShowTitle {
+		reserved += 2
+	}
 	h := m.height - reserved
-	if h < 4 {
-		h = 4
+	if h < 2 {
+		h = 2
 	}
 	return h
 }
@@ -1900,7 +1902,9 @@ func (m Model) View() tea.View {
 	case viewSettingsInput:
 		b.WriteString(m.renderSettingsInput())
 	case viewRename:
-		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderSongsDefault()))
+		top := m.renderSongsDefaultTop()
+		bottom := m.renderBottomControls()
+		b.WriteString(m.renderOuterBoxAnchored(m.currentSongPath(), top, bottom))
 	case viewInfo:
 		b.WriteString(m.renderInfo())
 	case viewAddSong:
@@ -1929,14 +1933,27 @@ func (m Model) View() tea.View {
 		// Playlists view: show song path in outer box header
 		b.WriteString(m.renderOuterBox(m.currentSongPath(), m.renderPlaylists()))
 	default:
-		// viewDefault / viewAll: full outer box with song path header
-		var inner string
+		// viewDefault / viewAll: anchored layout with controls at bottom
 		if m.view == viewAll {
-			inner = m.renderSongsAll()
+			// Fall back to compact default view if terminal is too short
+			minHeight := 18
+			if m.prefs.ShowTitle {
+				minHeight += 2
+			}
+			if m.height < minHeight {
+				top := m.renderSongsDefaultTop()
+				bottom := m.renderBottomControls()
+				b.WriteString(m.renderOuterBoxAnchored(m.currentSongPath(), top, bottom))
+			} else {
+				top := m.renderSongsAllTop()
+				bottom := m.renderBottomControls()
+				b.WriteString(m.renderOuterBoxAnchored(m.currentSongPath(), top, bottom))
+			}
 		} else {
-			inner = m.renderSongsDefault()
+			top := m.renderSongsDefaultTop()
+			bottom := m.renderBottomControls()
+			b.WriteString(m.renderOuterBoxAnchored(m.currentSongPath(), top, bottom))
 		}
-		b.WriteString(m.renderOuterBox(m.currentSongPath(), inner))
 	}
 
 	v := tea.NewView(b.String())
@@ -2045,6 +2062,73 @@ func (m Model) renderOuterBox(_, inner string) string {
 	return top + "\n" + headerLine + "\n" + sep + "\n" + body.String() + bottom + "\n"
 }
 
+func (m Model) renderOuterBoxAnchored(_ string, top, bottom string) string {
+	w := m.width
+	if w < 4 {
+		w = 4
+	}
+	innerW := w - 2
+
+	top = strings.TrimRight(top, "\n")
+	bottom = strings.TrimRight(bottom, "\n")
+
+	topLines := strings.Split(top, "\n")
+	bottomLines := strings.Split(bottom, "\n")
+	if len(topLines) > 0 && topLines[len(topLines)-1] == "" {
+		topLines = topLines[:len(topLines)-1]
+	}
+	if len(bottomLines) > 0 && bottomLines[len(bottomLines)-1] == "" {
+		bottomLines = bottomLines[:len(bottomLines)-1]
+	}
+
+	headerRows := 0
+	if m.prefs.ShowTitle {
+		headerRows = 2
+	}
+
+	contentRows := len(topLines) + len(bottomLines)
+	availableRows := m.height - 2 - headerRows
+	padding := availableRows - contentRows
+	if padding < 0 {
+		padding = 0
+	}
+
+	var body strings.Builder
+	for _, line := range topLines {
+		lw := lipgloss.Width(line)
+		pad := innerW - lw - 2
+		if pad < 0 {
+			pad = 0
+		}
+		body.WriteString("│ " + line + strings.Repeat(" ", pad) + " │\n")
+	}
+	for i := 0; i < padding; i++ {
+		body.WriteString("│" + strings.Repeat(" ", innerW) + "│\n")
+	}
+	for _, line := range bottomLines {
+		lw := lipgloss.Width(line)
+		pad := innerW - lw - 2
+		if pad < 0 {
+			pad = 0
+		}
+		body.WriteString("│ " + line + strings.Repeat(" ", pad) + " │\n")
+	}
+
+	topBorder := "╭" + strings.Repeat("─", innerW) + "╮"
+	bottomBorder := "╰" + strings.Repeat("─", innerW) + "╯"
+
+	if !m.prefs.ShowTitle {
+		return topBorder + "\n" + body.String() + bottomBorder + "\n"
+	}
+
+	title := m.renderJammerTitle()
+	titleW := lipgloss.Width(title)
+	headerLine := "│ " + title + strings.Repeat(" ", innerW-2-titleW) + " │"
+	sep := "├" + strings.Repeat("─", innerW) + "┤"
+
+	return topBorder + "\n" + headerLine + "\n" + sep + "\n" + body.String() + bottomBorder + "\n"
+}
+
 // ── Songs view ────────────────────────────────────────────────────────────────
 
 // songBoxWidth returns the Width param for inner lipgloss boxes.
@@ -2106,7 +2190,7 @@ func formatSongLine(label, title, author string, boxW int) string {
 	return labelPart + titleTrunc + strings.Repeat(" ", padLen) + author
 }
 
-func (m Model) renderSongsDefault() string {
+func (m Model) renderSongsDefaultTop() string {
 	var b strings.Builder
 
 	boxW := m.songBoxWidth()      // Width param for lipgloss
@@ -2240,22 +2324,10 @@ func (m Model) renderSongsDefault() string {
 		Render(helpText)
 	b.WriteString(helpBar + "\n")
 
-	// ── Visualizer row ────────────────────────────────────────────────────────
-	b.WriteString(m.renderVisualizer() + "\n")
-
-	// ── Progress/time bar ─────────────────────────────────────────────────────
-	b.WriteString(boxStyle.Render(m.renderProgressBar()))
-	b.WriteString("\n")
-
-	// ── Status flash message ──────────────────────────────────────────────────
-	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 3*time.Second {
-		b.WriteString(styleHelp.Render("  "+m.statusMsg) + "\n")
-	}
-
 	return b.String()
 }
 
-func (m Model) renderSongsAll() string {
+func (m Model) renderSongsAllTop() string {
 	var b strings.Builder
 
 	boxW := m.songBoxWidth()
@@ -2381,14 +2453,27 @@ func (m Model) renderSongsAll() string {
 		Render(helpText)
 	b.WriteString(helpBar + "\n")
 
-	// ── Visualizer row ────────────────────────────────────────────────────────
+	return b.String()
+}
+
+func (m Model) renderBottomControls() string {
+	var b strings.Builder
+
 	b.WriteString(m.renderVisualizer() + "\n")
 
-	// ── Progress/time bar ─────────────────────────────────────────────────────
-	b.WriteString(boxStyle.Render(m.renderProgressBar()))
-	b.WriteString("\n")
+	boxW := m.songBoxWidth()
+	boxBorderColor := activePalette.TimeBorderColor
+	if boxBorderColor == "" {
+		boxBorderColor = lipgloss.Color("61")
+	}
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(boxBorderColor).
+		Padding(0, 1).
+		Width(boxW)
 
-	// ── Status flash message ──────────────────────────────────────────────────
+	b.WriteString(boxStyle.Render(m.renderProgressBar()) + "\n")
+
 	if m.statusMsg != "" && time.Since(m.statusMsgTime) < 3*time.Second {
 		b.WriteString(styleHelp.Render("  "+m.statusMsg) + "\n")
 	}
