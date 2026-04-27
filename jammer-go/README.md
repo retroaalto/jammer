@@ -130,7 +130,7 @@ Full default values — copy this as a starting point:
   "favoriteExplainer": false,
   "EnableQuickPlayFromSearch": false,
   "searchResultCount": 0,
-  "showTitle": false,
+  "showTitle": true,
   "titleText": "",
   "titleAnimationSpeed": 0,
   "titleAnimationInterval": 0

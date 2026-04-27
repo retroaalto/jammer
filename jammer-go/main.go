@@ -68,9 +68,20 @@ func loadSettings(path string) settings {
 	var s settings
 	data, err := os.ReadFile(path)
 	if err != nil {
+		s.ShowTitle = true
 		return s
 	}
-	_ = json.Unmarshal(stripBOM(data), &s)
+	data = stripBOM(data)
+	_ = json.Unmarshal(data, &s)
+	// Default showTitle to true when the key is missing from settings.json.
+	if !s.ShowTitle {
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err == nil {
+			if _, ok := raw["showTitle"]; !ok {
+				s.ShowTitle = true
+			}
+		}
+	}
 	return s
 }
 
