@@ -175,7 +175,7 @@ Controls the audio spectrum visualizer. Place this file in the jammer data direc
 ```ini
 [Audio Visualizer]
 ; Refresh time in milliseconds
-RefreshTime = 100
+RefreshTime = 80
 ; Frequency range displayed (Hz)
 MinFrequency = 80
 MaxFrequency = 16000

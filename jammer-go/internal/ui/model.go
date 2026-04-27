@@ -62,25 +62,25 @@ type rssFetchDoneMsg struct {
 type viewKind int
 
 const (
-	viewDefault       viewKind = iota // 3-song snippet (prev/current/next)
-	viewAll                           // full scrollable list
-	viewPlaylists                     // playlist browser
-	viewHelp                          // help screen
-	viewSettings                      // settings screen
-	viewSettingsInput                 // text input for a settings value
-	viewRename                        // rename song input
-	viewInfo                          // song info overlay
-	viewAddSong                       // add song input
-	viewPlaySong                      // play arbitrary path/URL input (Phase 2 #4)
-	viewSaveAs                        // save playlist as new name (Phase 2 #8)
-	viewLog                           // scrollable log viewer (Phase 2 #12)
-	viewShowSongs                     // read-only song list from another playlist (Phase 2 #11)
-	viewSearchQuery                   // online search query input (Phase 2 #5)
-	viewSearchResults                 // online search results list (Phase 2 #5)
-	viewEditKeybinds                  // edit keybindings view (Phase 3 #14)
-	viewChangeTheme                   // theme picker view (Phase 3 #16)
-	viewRssFeed                       // RSS feed episode list (Phase 3 #18)
-	viewChangeLanguage                // language picker
+	viewDefault        viewKind = iota // 3-song snippet (prev/current/next)
+	viewAll                            // full scrollable list
+	viewPlaylists                      // playlist browser
+	viewHelp                           // help screen
+	viewSettings                       // settings screen
+	viewSettingsInput                  // text input for a settings value
+	viewRename                         // rename song input
+	viewInfo                           // song info overlay
+	viewAddSong                        // add song input
+	viewPlaySong                       // play arbitrary path/URL input (Phase 2 #4)
+	viewSaveAs                         // save playlist as new name (Phase 2 #8)
+	viewLog                            // scrollable log viewer (Phase 2 #12)
+	viewShowSongs                      // read-only song list from another playlist (Phase 2 #11)
+	viewSearchQuery                    // online search query input (Phase 2 #5)
+	viewSearchResults                  // online search results list (Phase 2 #5)
+	viewEditKeybinds                   // edit keybindings view (Phase 3 #14)
+	viewChangeTheme                    // theme picker view (Phase 3 #16)
+	viewRssFeed                        // RSS feed episode list (Phase 3 #18)
+	viewChangeLanguage                 // language picker
 )
 
 // ── Download state per song ───────────────────────────────────────────────────
@@ -142,7 +142,7 @@ var (
 			Underline(true)
 
 	styleTabInactive = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
+				Foreground(lipgloss.Color("241"))
 
 	// ── Help screen ──────────────────────────────────────────────────────
 	styleHelpHeader  = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
@@ -239,23 +239,23 @@ func rebuildVizStyles() {
 // VizConfig holds the settings read from Visualizer.ini.
 // All fields have built-in defaults that are used when the file is absent.
 type VizConfig struct {
-	RefreshTime          int     // tick interval in ms
-	MinFrequency         float64 // Hz — left edge of bar display
-	MaxFrequency         float64 // Hz — right edge of bar display
-	FrequencyMultiplier  float64 // linear amplitude multiplier applied after power scaling
+	RefreshTime           int     // tick interval in ms
+	MinFrequency          float64 // Hz — left edge of bar display
+	MaxFrequency          float64 // Hz — right edge of bar display
+	FrequencyMultiplier   float64 // linear amplitude multiplier applied after power scaling
 	LogarithmicMultiplier float64 // power exponent applied to raw FFT values
-	PausingEffect        bool    // decay bars when paused
+	PausingEffect         bool    // decay bars when paused
 }
 
 // defaultVizConfig returns the built-in defaults (matches Visualizer.ini defaults).
 func defaultVizConfig() VizConfig {
 	return VizConfig{
-		RefreshTime:          100,
-		MinFrequency:         80,
-		MaxFrequency:         16000,
-		FrequencyMultiplier:  2.5,
+		RefreshTime:           80,
+		MinFrequency:          140,
+		MaxFrequency:          16000,
+		FrequencyMultiplier:   2.5,
 		LogarithmicMultiplier: 0.45,
-		PausingEffect:        true,
+		PausingEffect:         true,
 	}
 }
 
@@ -430,20 +430,20 @@ type Model struct {
 	// Phase 3: edit keybindings
 	kbEditCursor   int
 	kbEditOffset   int
-	kbEditInput    bool   // true when capturing a new key for the selected action
-	kbEditAction   string // action currently being edited
-	kbEditCaptured string // detected key name (shown for confirmation)
+	kbEditInput    bool     // true when capturing a new key for the selected action
+	kbEditAction   string   // action currently being edited
+	kbEditCaptured string   // detected key name (shown for confirmation)
 	kbEditKeys     []string // sorted list of action names for the editor
 
 	// Phase 3: theme picker
 	themeCursor int // cursor position in theme list
 
 	// Phase 3: RSS feed view
-	rssFeed        *rss.Feed  // currently loaded feed (nil = none)
-	rssCursor      int        // episode list cursor
-	rssOffset      int        // episode list scroll offset
-	rssLoading     bool       // true while fetching
-	rssErr         string     // last fetch error
+	rssFeed        *rss.Feed     // currently loaded feed (nil = none)
+	rssCursor      int           // episode list cursor
+	rssOffset      int           // episode list scroll offset
+	rssLoading     bool          // true while fetching
+	rssErr         string        // last fetch error
 	rssOriginSongs []player.Song // songs to restore when exiting RSS view
 	rssOriginFile  string        // playlist file to restore
 
@@ -634,15 +634,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Persist enriched metadata back to the playlist file.
 			m.saveCurrentPlaylist()
 
-		// Auto-play if this is the currently selected track and player is stopped.
-		if msg.index == m.playing && m.p.State() == player.StateStopped {
-			jlog.Infof("auto-play after download index=%d", msg.index)
-			if err := m.p.PlayIndex(msg.index); err != nil {
-				jlog.Errorf("auto-play failed index=%d: %v", msg.index, err)
+			// Auto-play if this is the currently selected track and player is stopped.
+			if msg.index == m.playing && m.p.State() == player.StateStopped {
+				jlog.Infof("auto-play after download index=%d", msg.index)
+				if err := m.p.PlayIndex(msg.index); err != nil {
+					jlog.Errorf("auto-play failed index=%d: %v", msg.index, err)
+				}
+				return m, m.startViz(0)
 			}
-			return m, m.startViz(0)
 		}
-	}
 
 	case searchDoneMsg:
 		m.searchLoading = false
@@ -4388,7 +4388,8 @@ func (m Model) renderChangeTheme() string {
 	return b.String()
 }
 
-func (m Model) handleChangeThemeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {	names := theme.Names()
+func (m Model) handleChangeThemeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	names := theme.Names()
 	switch msg.String() {
 	case "esc":
 		m.view = viewDefault
