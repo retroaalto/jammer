@@ -49,6 +49,7 @@ type settings struct {
 	SearchResultCount         int     `json:"searchResultCount"`
 	ShowTitle                 bool    `json:"showTitle"`
 	TitleText                 string  `json:"titleText"`
+	TitleAnimation            string  `json:"titleAnimation"`
 	TitleAnimationSpeed       int     `json:"titleAnimationSpeed"`
 	TitleAnimationInterval    int     `json:"titleAnimationInterval"`
 	Theme                     string  `json:"theme"`
@@ -81,6 +82,9 @@ func loadSettings(path string) settings {
 				s.ShowTitle = true
 			}
 		}
+	}
+	if s.TitleAnimation == "" {
+		s.TitleAnimation = "kitt"
 	}
 	return s
 }
@@ -436,6 +440,8 @@ func main() {
 		SearchResultCount:         cfg.SearchResultCount,
 		ShowTitle:                 cfg.ShowTitle,
 		TitleText:                 cfg.TitleText,
+		TitleAnimationRaw:         cfg.TitleAnimation,
+		TitleAnimation:            ui.ResolveAnimation(cfg.TitleAnimation),
 		TitleAnimationSpeed:       cfg.TitleAnimationSpeed,
 		TitleAnimationInterval:    cfg.TitleAnimationInterval,
 		Theme:                     cfg.Theme,

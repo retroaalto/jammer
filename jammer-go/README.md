@@ -132,6 +132,7 @@ Full default values — copy this as a starting point:
   "searchResultCount": 0,
   "showTitle": true,
   "titleText": "",
+  "titleAnimation": "kitt",
   "titleAnimationSpeed": 0,
   "titleAnimationInterval": 0
 }
@@ -161,6 +162,7 @@ Full default values — copy this as a starting point:
 | `searchResultCount` | int | `0` | Max online search results to return. `0` → `10`; capped at `20` |
 | `showTitle` | bool | `false` | Show an animated title banner at the top of the UI |
 | `titleText` | string | `""` | Custom title text. `""` → `"Jammer - light-weight CLI music player"`. Requires `showTitle: true` |
+| `titleAnimation` | string | `"kitt"` | Title animation type: `kitt`, `rainbow`, `wave`, `typing`, `glitch`, `pulse`, `spotlight`, `border`, `matrix`, `bounce`, or `random`. Requires `showTitle: true` |
 | `titleAnimationSpeed` | int | `0` | Milliseconds per animation step. `0` → `80`. Requires `showTitle: true` |
 | `titleAnimationInterval` | int | `0` | Milliseconds to pause at the left end before reversing. `0` → `1000`. Requires `showTitle: true` |
 

@@ -337,8 +337,10 @@ type Prefs struct {
 	SearchResultCount         int
 	ShowTitle                 bool
 	TitleText                 string
-	TitleAnimationSpeed       int // ms per scanner step (default 80)
-	TitleAnimationInterval    int // ms pause at each end before reversing (default 1000)
+	TitleAnimation            string // concrete animation name used for rendering
+	TitleAnimationRaw         string // original value from settings.json (may be "random")
+	TitleAnimationSpeed       int    // ms per scanner step (default 80)
+	TitleAnimationInterval    int    // ms pause at each end before reversing (default 1000)
 	Theme                     string
 	Language                  string // locale code, e.g. "en", "fi", "pt-br"
 }
@@ -396,11 +398,9 @@ type Model struct {
 	lastErrTime time.Time // when lastError was set; cleared after 8 s by tickMsg
 
 	// title animation
-	titleTick       int  // kept for backwards compat, unused now
-	titleScanPos    int  // index of bright spot in title runes
-	titleScanDir    int  // +1 or -1
-	titlePauseTicks int  // remaining pause ticks at each end
-	titleRunning    bool // whether the title tick loop is active
+	titleTick    int  // kept for backwards compat, unused now
+	titleFrame   int  // generic frame counter for all animations
+	titleRunning bool // whether the title tick loop is active
 
 	// modal inputs (rename, add song, play song, save as, etc.)
 	modalInput          string // current text in modal dialogs
@@ -474,19 +474,26 @@ func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekSte
 		initialView = viewAll
 	}
 
+	// Resolve random animation on startup and ensure defaults.
+	if prefs.TitleAnimationRaw == "random" || prefs.TitleAnimation == "" {
+		prefs.TitleAnimation = ResolveAnimation(prefs.TitleAnimationRaw)
+	}
+	if prefs.TitleAnimationRaw == "" {
+		prefs.TitleAnimationRaw = prefs.TitleAnimation
+	}
+
 	m := Model{
-		p:            p,
-		songsDir:     songsDir,
-		plsDir:       plsDir,
-		kb:           kb,
-		seekStep:     seekStep,
-		prefs:        prefs,
-		songs:        p.Songs(),
-		playing:      p.Index(),
-		dlStates:     make(map[int]*dlState),
-		view:         initialView,
-		titleScanDir: 1,
-		vizCfg:       loadVizConfig(filepath.Join(dirs.Data(), "Visualizer.ini")),
+		p:        p,
+		songsDir: songsDir,
+		plsDir:   plsDir,
+		kb:       kb,
+		seekStep: seekStep,
+		prefs:    prefs,
+		songs:    p.Songs(),
+		playing:  p.Index(),
+		dlStates: make(map[int]*dlState),
+		view:     initialView,
+		vizCfg:   loadVizConfig(filepath.Join(dirs.Data(), "Visualizer.ini")),
 	}
 	m.reloadPlaylists()
 	if plsFile != "" {
@@ -688,34 +695,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case titleTickMsg:
 		if m.prefs.ShowTitle {
-			titleRunes := []rune(m.titleString())
-			n := len(titleRunes)
-			if n > 0 {
-				intervalTicks := m.prefs.TitleAnimationInterval
-				if intervalTicks <= 0 {
-					intervalTicks = 1000
-				}
-				speedMs := m.prefs.TitleAnimationSpeed
-				if speedMs <= 0 {
-					speedMs = 80
-				}
-				pauseNeeded := intervalTicks / speedMs
-				if m.titlePauseTicks > 0 {
-					m.titlePauseTicks--
-				} else {
-					m.titleScanPos += m.titleScanDir
-					if m.titleScanPos >= n {
-						// Right end: reverse immediately, no pause
-						m.titleScanPos = n - 1
-						m.titleScanDir = -1
-					} else if m.titleScanPos < 0 {
-						// Left end: pause before starting next sweep
-						m.titleScanPos = 0
-						m.titleScanDir = 1
-						m.titlePauseTicks = pauseNeeded
-					}
-				}
-			}
+			m.titleFrame++
 			return m, titleTickCmd(m.prefs.TitleAnimationSpeed)
 		}
 
@@ -936,11 +916,48 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// F7 / F8 cycle title animation globally.
+	if keyStr == "f7" {
+		m = m.cycleTitleAnimation(-1)
+		return m, nil
+	}
+	if keyStr == "f8" {
+		m = m.cycleTitleAnimation(1)
+		return m, nil
+	}
+
 	// Default handler routing
 	if m.view == viewPlaylists {
 		return m.handlePlaylistKey(msg)
 	}
 	return m.handleSongKey(msg)
+}
+
+// cycleTitleAnimation moves the title animation forward or backward.
+func (m Model) cycleTitleAnimation(delta int) Model {
+	curIdx := 0
+	for i, a := range TitleAnimations {
+		if a == m.prefs.TitleAnimationRaw {
+			curIdx = i
+			break
+		}
+	}
+	nextIdx := (curIdx + delta) % len(TitleAnimations)
+	if nextIdx < 0 {
+		nextIdx += len(TitleAnimations)
+	}
+	m.prefs.TitleAnimationRaw = TitleAnimations[nextIdx]
+	if m.prefs.TitleAnimationRaw == "random" {
+		m.prefs.TitleAnimation = ResolveAnimation("random")
+	} else {
+		m.prefs.TitleAnimation = m.prefs.TitleAnimationRaw
+	}
+	m.titleFrame = 0
+	m.setStatus("Title animation: " + m.prefs.TitleAnimationRaw)
+	if m.prefs.SettingsPath != "" {
+		saveSettings(m.prefs)
+	}
+	return m
 }
 
 func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1999,42 +2016,9 @@ func (m Model) titleString() string {
 }
 
 // renderJammerTitle renders the title with a K.I.T.T.-style scanner:
-// one bright red spot bouncing left/right, trailing tail, rest dim.
+// renderJammerTitle renders the animated title using the selected animation.
 func (m Model) renderJammerTitle() string {
-	runes := []rune(m.titleString())
-	n := len(runes)
-	if n == 0 {
-		return ""
-	}
-
-	bright := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff4444")).Bold(true)
-	tail1 := lipgloss.NewStyle().Foreground(lipgloss.Color("#aa1111"))
-	tail2 := lipgloss.NewStyle().Foreground(lipgloss.Color("#661111"))
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-
-	pos := m.titleScanPos
-	dir := m.titleScanDir
-	paused := m.titlePauseTicks > 0
-
-	var s strings.Builder
-	for i, ch := range runes {
-		c := string(ch)
-		isTail1 := (dir > 0 && i == pos-1) || (dir < 0 && i == pos+1)
-		isTail2 := (dir > 0 && i == pos-2) || (dir < 0 && i == pos+2)
-		switch {
-		case paused:
-			s.WriteString(dim.Render(c))
-		case i == pos:
-			s.WriteString(bright.Render(c))
-		case isTail1:
-			s.WriteString(tail1.Render(c))
-		case isTail2:
-			s.WriteString(tail2.Render(c))
-		default:
-			s.WriteString(dim.Render(c))
-		}
-	}
-	return s.String()
+	return renderTitleAnimation(m.prefs.TitleAnimation, m.titleFrame, m.titleString())
 }
 
 // renderOuterBox wraps inner content in a rounded border box.
@@ -2660,6 +2644,7 @@ func (m Model) renderSettings() string {
 		{"Favorite Explainer", boolStr(m.prefs.FavoriteExplainer), "Q " + locale.T("Settings", "ToToggle") + " (show explainer when favoriting a song)"},
 		{"Toggle Quick Play From Search", boolStr(m.prefs.EnableQuickPlayFromSearch), "R " + locale.T("Settings", "ToToggle") + " (automatically play the first search result when searching)"},
 		{"Search Result Count", fmt.Sprintf("%d", m.prefs.SearchResultCount), "S " + locale.T("Settings", "ToChange") + " (number of online search results, default 10)"},
+		{"Title Animation", m.prefs.TitleAnimationRaw, "T " + locale.T("Settings", "ToChange") + " (cycle through animations)"},
 	}
 
 	// Column widths
@@ -2898,7 +2883,7 @@ func (m Model) handleSettingsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	const totalItems = 19
+	const totalItems = 20
 
 	switch keyStr {
 	case "up", "k":
@@ -2922,7 +2907,7 @@ func (m Model) handleSettingsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		"a": 0, "b": 1, "c": 2, "d": 3, "e": 4, "f": 5,
 		"h": 7, "i": 8, "l": 11,
 		"m": 12, "n": 13, "o": 14, "p": 15, "q": 16, "r": 17,
-		"s": 18,
+		"s": 18, "t": 19,
 	}
 	if idx, ok := letterKeys[keyStr]; ok {
 		m.settingsCursor = idx
@@ -3007,6 +2992,29 @@ func (m Model) applySettingAction(idx int) Model {
 		m.modalInput = fmt.Sprintf("%d", m.prefs.SearchResultCount)
 		m.view = viewSettingsInput
 		return m
+	case 19: // Title Animation
+		// Cycle to next animation in the list.
+		cur := ""
+		for _, a := range TitleAnimations {
+			if a == m.prefs.TitleAnimationRaw {
+				cur = a
+				break
+			}
+		}
+		nextIdx := 0
+		for i, a := range TitleAnimations {
+			if a == cur {
+				nextIdx = (i + 1) % len(TitleAnimations)
+				break
+			}
+		}
+		m.prefs.TitleAnimationRaw = TitleAnimations[nextIdx]
+		if m.prefs.TitleAnimationRaw == "random" {
+			m.prefs.TitleAnimation = ResolveAnimation("random")
+		} else {
+			m.prefs.TitleAnimation = m.prefs.TitleAnimationRaw
+		}
+		m.titleFrame = 0
 	}
 	if m.prefs.SettingsPath != "" {
 		saveSettings(m.prefs)
@@ -4349,6 +4357,7 @@ func saveSettings(p Prefs) {
 	raw["favoriteExplainer"] = p.FavoriteExplainer
 	raw["EnableQuickPlayFromSearch"] = p.EnableQuickPlayFromSearch
 	raw["searchResultCount"] = p.SearchResultCount
+	raw["titleAnimation"] = p.TitleAnimationRaw
 	raw["theme"] = p.Theme
 	raw["language"] = p.Language
 	out, err := json.MarshalIndent(raw, "", "  ")

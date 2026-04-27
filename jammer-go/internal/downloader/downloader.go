@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -415,8 +416,9 @@ func downloadViaYtdlp(ctx context.Context, url, songsDir string, progress chan<-
 		"--output", outputTemplate,
 		url,
 	)
-	cmd.Stdout = os.Stdout // yt-dlp prints progress to stdout
-	cmd.Stderr = os.Stderr
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &stderrBuf
 
 	// We can't easily hook into yt-dlp's progress inline, so just report indeterminate.
 	done := make(chan error, 1)
@@ -428,6 +430,9 @@ func downloadViaYtdlp(ctx context.Context, url, songsDir string, progress chan<-
 		select {
 		case err := <-done:
 			if err != nil {
+				if stderrBuf.Len() > 0 {
+					jlog.Errorf("yt-dlp stderr: %s", stderrBuf.String())
+				}
 				return "", Meta{}, fmt.Errorf("yt-dlp: %w", err)
 			}
 			// Find the file yt-dlp wrote (basename + .mp3)
