@@ -33,8 +33,6 @@ namespace Jammer
         // public static MainStates state = MainStates.idle;
         // ! Translations needed to locales
         public static MainStates state = MainStates.playing;
-        private static Thread loopThread = new(() => { });
-        private static Thread visualizerThread = new(() => { });
         public static int consoleWidth = Console.WindowWidth;
         public static int consoleHeight = Console.WindowHeight;
         public static bool CLI = false;
@@ -42,7 +40,6 @@ namespace Jammer
         public static double lastPlaybackTime = -1;
         public static double treshhold = 1;
         public static double prevMusicTimePlayed = 0;
-        public static bool LoopRunning = true;
 
         //
         // Run
@@ -123,228 +120,30 @@ namespace Jammer
             Console.CancelKeyPress += new ConsoleCancelEventHandler(Exit.OnExit);
             AppDomain.CurrentDomain.ProcessExit += new EventHandler(Exit.OnProcessExit);
 
-            Debug.dprint("Start Loop");
-            loopThread = new Thread(Loop);
-            visualizerThread = new Thread(EqualizerLoop);
-            loopThread.Start();
-            visualizerThread.Start();
+            Debug.dprint("Start RenderLoop");
+            RenderLoop.Start();
         }
 
         //
-        // Main loop
+        // Render dirty flags — set by keyboard/state handlers, consumed by RenderLoop.
+        // Keep these as pass-through properties pointing to RenderState for
+        // backwards compatibility with any callers not yet migrated.
         //
-        public static bool drawTime = false;
-        public static bool drawVisualizer = false;
-        public static bool drawWhole = false;
+        public static bool drawTime
+        {
+            get => RenderState.NeedsTimeRedraw;
+            set => RenderState.NeedsTimeRedraw = value;
+        }
+        public static bool drawWhole
+        {
+            get => RenderState.NeedsFullRedraw;
+            set => RenderState.NeedsFullRedraw = value;
+        }
+        // drawVisualizer is no longer needed — visualizer runs every tick in RenderLoop.
+        public static bool drawVisualizer = false; // kept for source compatibility only
 
         public static string previousView = "default";
         public static bool debug = false;
-        public static void Loop()
-        {
-            lastSeconds = -1;
-            treshhold = 1;
-
-            Utils.IsInitialized = true;
-
-            AnsiConsole.Clear();
-            TUI.RefreshCurrentView();
-            AnsiConsole.Cursor.Hide();
-
-            while (LoopRunning)
-            {
-                AnsiConsole.Cursor.Hide();
-                if (Utils.Songs.Length != 0)
-                {
-                    // if the first song is "" then there are more songs
-                    if (Utils.Songs[0] == "" && Utils.Songs.Length > 1)
-                    {
-                        state = MainStates.play;
-                        Play.DeleteSong(0, false);
-                        Play.PlaySong();
-                    }
-                }
-
-                if (consoleWidth != Console.WindowWidth || consoleHeight != Console.WindowHeight)
-                {
-                    consoleHeight = Console.WindowHeight;
-                    consoleWidth = Console.WindowWidth;
-                    AnsiConsole.Clear();
-                    drawWhole = true;
-                }
-
-                switch (state)
-                {
-                    case MainStates.idle:
-                        // TUI.ClearScreen();
-                        _ = CheckKeyboardAsync();
-                        break;
-
-                    case MainStates.play:
-                        Debug.dprint("Play");
-                        if (Utils.Songs.Length > 0)
-                        {
-                            Debug.dprint("Play - len");
-                            Play.PlaySong();
-                            TUI.ClearScreen();
-                            TUI.DrawPlayer();
-
-                            Utils.TotalMusicDurationInSec = 0;
-                            state = MainStates.playing;
-                        }
-                        else
-                        {
-                            drawWhole = true;
-                            state = MainStates.idle;
-                        }
-                        break;
-
-                    case MainStates.playing:
-                        // every second, update screen, use MusicTimePlayed, and prevMusicTimePlayed
-                        if (Utils.TotalMusicDurationInSec - prevMusicTimePlayed >= 1)
-                        {
-                            drawTime = true;
-                            prevMusicTimePlayed = Utils.TotalMusicDurationInSec;
-                        }
-
-                        // If the song is finished
-                        if (Bass.ChannelIsActive(Utils.CurrentMusic) == PlaybackState.Stopped && Utils.TotalMusicDurationInSec > 0)
-                        {
-                            prevMusicTimePlayed = 0;
-                            drawTime = true;
-                        }
-
-                        // Check for RSS auto-skip timer
-                        if (Play.ShouldSkipRss())
-                        {
-                            Play.MaybeNextSong(forceNoLoop: true);
-                        }
-
-                        if (debug)
-                            Message.Data("asd", "asd");
-                        _ = CheckKeyboardAsync();
-                        break;
-
-                    case MainStates.pause:
-                        Play.PauseSong();
-                        state = MainStates.idle;
-                        break;
-
-                    case MainStates.stop:
-                        Play.StopSong();
-                        state = MainStates.idle;
-                        break;
-
-                    case MainStates.next:
-                        Debug.dprint("next");
-                        Play.NextSong();
-                        break;
-                    case MainStates.previous:
-                        if (Utils.TotalMusicDurationInSec > 3)
-                        { // if the song is played for more than 5 seconds, go to the beginning
-                            Play.SeekSong(0, false);
-                            state = MainStates.playing;
-                        }
-                        else
-                        {
-                            Play.PrevSong();
-                        }
-                        break;
-                }
-
-                if (debug)
-                    // print the call stack
-                    Message.Data(Environment.StackTrace, "Call Stack", true);
-
-                Utils.PreciseTime = Bass.ChannelBytes2Seconds(Utils.CurrentMusic, Bass.ChannelGetPosition(Utils.CurrentMusic));
-                // get current time in seconds
-                Utils.TotalMusicDurationInSec = Bass.ChannelBytes2Seconds(Utils.CurrentMusic, Bass.ChannelGetPosition(Utils.CurrentMusic));
-                // get whole song length in seconds
-                //Utils.currentMusicLength = Utils.audioStream.Length / Utils.audioStream.WaveFormat.AverageBytesPerSecond;
-                Utils.SongDurationInSec = Bass.ChannelBytes2Seconds(Utils.CurrentMusic, Bass.ChannelGetLength(Utils.CurrentMusic));
-
-                Utils.MusicTimePercentage = (float)(Utils.TotalMusicDurationInSec / Utils.SongDurationInSec * 100);
-
-                // if no song is playing, set the current song to ""
-                if (Utils.Songs.Length == 0)
-                {
-                    Utils.CurrentSongPath = "";
-                }
-
-                // If the view is changed, refresh the screen
-                if (previousView != playerView)
-                {
-                    drawWhole = true;
-                }
-
-                if (playerView == "default" || playerView == "all" || playerView == "rss")
-                {
-                    if (debug)
-                        Message.Data(drawWhole.ToString(), "22");
-
-                    if (drawVisualizer && Preferences.isVisualizer)
-                    {
-                        if (state == MainStates.playing || state == MainStates.pause || state == MainStates.stop || state == MainStates.idle)
-                        {
-                            TUI.DrawVisualizer();
-                        }
-                    }
-                    if (drawTime)
-                    {
-                        TUI.DrawTime();
-                    }
-                    if (drawWhole)
-                    {
-                        TUI.RefreshCurrentView();
-                    }
-                }
-                else
-                {
-                    if (drawWhole)
-                    {
-                        TUI.RefreshCurrentView();
-                    }
-                }
-
-                previousView = playerView;
-                drawVisualizer = false;
-                drawTime = false;
-                drawWhole = false;
-
-                if (playerView == "default" || playerView == "all" || playerView == "rss")
-                {
-                    Thread.Sleep(1);
-                }
-                else
-                    Thread.Sleep(5);
-            }
-        }
-
-        static bool canVisualize = false;
-        private static void EqualizerLoop()
-        {
-            while (true)
-            {
-                if (Preferences.isVisualizer)
-                {
-                    if (playerView == "default" || playerView == "all")
-                    {
-                        canVisualize = true;
-                    }
-                    else
-                    {
-                        canVisualize = false;
-                    }
-
-                    if (canVisualize)
-                    {
-                        drawVisualizer = true;
-                    }
-                }
-                Thread.Sleep(Visual.refreshTime);
-            }
-        }
-
-
         /// <summary>
         /// Removes "[" and "]" from a string to prevent Spectre.Console from blowing up.
         /// </summary>

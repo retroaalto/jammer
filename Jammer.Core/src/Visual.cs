@@ -46,6 +46,11 @@ PausingEffect = true
         public static bool pausingEffect = true; // Pausing effect flag
 
         private static float scaleFactor = 1.0f;
+
+        // Reusable FFT buffer — allocated once, reused every frame to avoid GC pressure.
+        // Resized only when bufferSize changes.
+        private static float[] _fftBuffer = new float[41000];
+
         public static string GetSongVisual(int length, bool isPlaying)
         {
             // If the song is not playing, gradually decrease the scale factor
@@ -58,8 +63,12 @@ PausingEffect = true
                 scaleFactor = 1.0f; // Reset the scale factor when the song starts playing again
             }
 
-            int _bufferSize = bufferSize; // FFT data buffer size
-            var fftData = new float[_bufferSize]; // FFT data buffer
+            // Resize the reusable buffer only if the configured size has changed
+            if (_fftBuffer.Length != bufferSize)
+            {
+                _fftBuffer = new float[bufferSize];
+            }
+            var fftData = _fftBuffer; // Use the reusable buffer
 
             // Retrieve FFT data from current music channel
             int bytesRead = Bass.ChannelGetData(Utils.CurrentMusic, fftData, (int)GetFFTDataFlags());
