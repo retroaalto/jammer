@@ -397,6 +397,10 @@ type Model struct {
 	lastError   string    // most recent download error message (empty = none)
 	lastErrTime time.Time // when lastError was set; cleared after 8 s by tickMsg
 
+	// download auto-skip; set to false when user presses ESC to stop cycling
+	// through failing downloads; reset to true on any successful play.
+	dlAutoSkip bool
+
 	// title animation
 	titleTick    int  // kept for backwards compat, unused now
 	titleFrame   int  // generic frame counter for all animations
@@ -483,17 +487,18 @@ func NewWithPlaylist(p *player.Player, songsDir, plsDir, plsFile string, seekSte
 	}
 
 	m := Model{
-		p:        p,
-		songsDir: songsDir,
-		plsDir:   plsDir,
-		kb:       kb,
-		seekStep: seekStep,
-		prefs:    prefs,
-		songs:    p.Songs(),
-		playing:  p.Index(),
-		dlStates: make(map[int]*dlState),
-		view:     initialView,
-		vizCfg:   loadVizConfig(filepath.Join(dirs.Data(), "Visualizer.ini")),
+		p:          p,
+		songsDir:   songsDir,
+		plsDir:     plsDir,
+		kb:         kb,
+		seekStep:   seekStep,
+		prefs:      prefs,
+		songs:      p.Songs(),
+		playing:    p.Index(),
+		dlStates:   make(map[int]*dlState),
+		view:       initialView,
+		vizCfg:     loadVizConfig(filepath.Join(dirs.Data(), "Visualizer.ini")),
+		dlAutoSkip: true,
 	}
 	m.reloadPlaylists()
 	if plsFile != "" {
@@ -605,7 +610,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastError = msg.err.Error()
 			m.lastErrTime = time.Now()
 			// Skip to the next song if this was the currently playing track.
-			if msg.index == m.playing {
+			if msg.index == m.playing && m.dlAutoSkip {
 				jlog.Infof("download failed for playing track — skipping to next index=%d", msg.index)
 				if err := m.p.Next(); err != nil {
 					jlog.Errorf("auto-skip after failed download: %v", err)
@@ -616,11 +621,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.clampSongScroll()
 				return m, m.downloadIfNeeded(m.playing)
 			}
-		} else {
-			ds.frac = 1
-			ds.err = nil
-			jlog.Infof("download done index=%d path=%q", msg.index, msg.path)
-			m.p.UpdateSongPath(msg.index, msg.path)
+	} else {
+		ds.frac = 1
+		ds.err = nil
+		m.dlAutoSkip = true // restore auto-skip now that a download succeeded
+		jlog.Infof("download done index=%d path=%q", msg.index, msg.path)
+		m.p.UpdateSongPath(msg.index, msg.path)
 
 			// Use metadata from the downloader (title/artist known at download time).
 			// Fall back to reading embedded ID3/Vorbis tags from the file.
@@ -889,6 +895,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// ToMainMenu (Escape) - clears filter if active; otherwise returns to viewDefault
 	if m.kb.Is("ToMainMenu", keyStr) {
+		// Stop auto-skip-on-failure if it's cycling through bad downloads.
+		m.dlAutoSkip = false
 		if m.filtering || m.filter != "" {
 			// Only clear the filter; stay in the current view.
 			m.filtering = false
@@ -1037,6 +1045,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			jlog.Infof("ui: next blocked — download active for index=%d", m.playing)
 			return m, nil
 		}
+		m.dlAutoSkip = true // user-initiated navigation restores auto-skip
 		if err := m.p.Next(); err != nil {
 			jlog.Errorf("ui: next failed: %v", err)
 		}
@@ -1054,6 +1063,7 @@ func (m Model) handleSongKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			jlog.Infof("ui: prev blocked — download active for index=%d", m.playing)
 			return m, nil
 		}
+		m.dlAutoSkip = true // user-initiated navigation restores auto-skip
 		if err := m.p.Prev(); err != nil {
 			jlog.Errorf("ui: prev failed: %v", err)
 		}

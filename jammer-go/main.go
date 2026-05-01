@@ -300,6 +300,30 @@ func main() {
 		case "-f", "--flush":
 			fmt.Fprintln(os.Stderr, "warning: -f/--flush is deprecated and has no effect")
 			os.Exit(0)
+
+		case "-h", "--help":
+			fmt.Printf(`jammer-go %s — terminal music player
+
+Usage:
+  jammer-go [flags] [file/url...]
+
+Flags:
+  -h, --help            Show this help message
+  -v, --version         Show version
+  -b                    Use BASS audio backend (requires libbass.so)
+  -p <playlist>         Open a playlist on startup
+  --xdg                 Force XDG data directories
+  --pprof [addr]        Start pprof HTTP server (default 127.0.0.1:6060)
+
+Playlist commands:
+  -l                    List all playlists
+  -c <name>             Create a new playlist
+  -d <name>             Delete a playlist
+  -s <name>             Show songs in a playlist
+  -a <name> <song...>   Add songs to a playlist
+  -r <name> <song>      Remove a song from a playlist
+`, version)
+			os.Exit(0)
 		}
 	}
 
